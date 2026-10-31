@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Environment
 import android.os.FileObserver
+import android.os.PowerManager
 import au.interstellr.glassbridge.core.BridgeLog
 import au.interstellr.glassbridge.core.MediaRules
 import au.interstellr.glassbridge.core.Uploader
@@ -24,7 +25,10 @@ import java.util.concurrent.TimeUnit
  *   unknown types and files modified in the last 3 s are skipped ([MediaRules]). A file still
  *   inside that 3 s window gets a re-scan when it leaves it.
  * - A file counts as synced only on `file_ack ok:true`; synced `<name>:<size>` ids live in
- *   SharedPreferences `media_sync` / `synced_ids`.
+ *   SharedPreferences `media_sync` / `synced_ids`. A file the iPhone refuses (`ok:false`) or
+ *   doesn't ack within 60 s is retried next session (PROTOCOL.md section 5), not in this one.
+ * - A partial wake lock is held while a scan uploads, so an upload that starts with the screen
+ *   on (or from the 60 s alarm) isn't frozen half way when Glass goes to sleep.
  * - Nothing uploads until `sync {enabled:true}`. When the link drops, BridgeService calls
  *   [setEnabled] (false), which also cancels the upload in flight. The phone re-sends `sync`
  *   on every connect, which triggers a scan, as does the periodic [rescan] (a safety net in
@@ -34,6 +38,14 @@ class MediaSync(context: Context, private val uploader: Uploader) {
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(MediaRules.PREFS, Context.MODE_PRIVATE)
     private val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+    private val wakeLock: PowerManager.WakeLock? = try {
+        (context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GlassBridge:media")
+            .apply { setReferenceCounted(false) }
+    } catch (e: RuntimeException) {
+        BridgeLog.w("No media wake lock: $e")
+        null
+    }
     private val worker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "GlassBridge-media").apply { isDaemon = true }
     }
@@ -136,31 +148,66 @@ class MediaSync(context: Context, private val uploader: Uploader) {
         synchronized(lock) { skip.addAll(refusedThisSession) }
         val todo = MediaRules.pending(files, skip, System.currentTimeMillis())
         if (todo.isNotEmpty()) BridgeLog.i("Media sync: ${todo.size} file(s) to upload")
-        for (f in todo) {
-            if (!enabled) return
-            val r = uploader.upload(f)
-            if (r.ok) {
-                synced.add(r.id)
-                skip.add(r.id)
-                prefs.edit().putStringSet(MediaRules.KEY_SYNCED_IDS, HashSet(synced)).apply()
-                BridgeLog.i("Synced ${r.id}")
-            } else if (r.ack != null) {
-                // The iPhone answered ok:false. Not synced; try it again next session, and
-                // carry on with newer files so one bad file can't block the rest.
-                BridgeLog.w("iPhone refused ${r.id}: ${r.error}; retrying it next session")
-                synchronized(lock) { refusedThisSession.add(r.id) }
-                skip.add(r.id)
-            } else {
-                // Link trouble, cancel or timeout: leave the rest for the next scan.
-                BridgeLog.w("Upload ${r.id} failed (${r.error}); will retry later")
-                return
+        try {
+            for (f in todo) {
+                if (!enabled) return
+                holdWakeLock()
+                val r = uploader.upload(f)
+                when (MediaRules.next(r)) {
+                    MediaRules.Next.SYNCED -> {
+                        synced.add(r.id)
+                        skip.add(r.id)
+                        prefs.edit().putStringSet(MediaRules.KEY_SYNCED_IDS, HashSet(synced)).apply()
+                        BridgeLog.i("Synced ${r.id}")
+                    }
+                    MediaRules.Next.NEXT_SESSION -> {
+                        // ok:false, or no file_ack within 60 s. Not synced; try it again next
+                        // session (not this one, so a slow save on the iPhone can't end up in
+                        // Photos twice), and carry on with newer files.
+                        BridgeLog.w("Upload ${r.id} not synced (${r.error}); retrying it next session")
+                        synchronized(lock) { refusedThisSession.add(r.id) }
+                        skip.add(r.id)
+                    }
+                    MediaRules.Next.NEXT_SCAN -> {
+                        // Link trouble or cancelled: leave the rest for the next scan.
+                        BridgeLog.w("Upload ${r.id} failed (${r.error}); will retry later")
+                        return
+                    }
+                }
             }
+        } finally {
+            releaseWakeLock()
         }
         if (!enabled) return
         val again = MediaRules.nextCheckDelayMs(dir.listFiles()?.toList() ?: emptyList(), skip, System.currentTimeMillis())
         if (again != null) schedule(again + 250L)
     }
 
-    /** Ids the iPhone answered ok:false for since sync was last turned on. Guarded by [lock]. */
+    /** Keeps the CPU awake for the next upload (timed, in case a release is ever missed). */
+    private fun holdWakeLock() {
+        try {
+            wakeLock?.acquire(UPLOAD_WAKE_MS)
+        } catch (e: RuntimeException) {
+            BridgeLog.w("Media wake lock failed: $e")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (e: RuntimeException) {
+            BridgeLog.w("Media wake lock release failed: $e")
+        }
+    }
+
+    /**
+     * Ids not synced this session that wait for the next one: the iPhone answered ok:false, or
+     * sent no file_ack in time. Cleared when sync is turned on again. Guarded by [lock].
+     */
     private val refusedThisSession = HashSet<String>()
+
+    companion object {
+        /** Longest one upload may hold the CPU awake: generous for a long video plus the 60 s ack wait. */
+        const val UPLOAD_WAKE_MS = 10 * 60_000L
+    }
 }

@@ -50,6 +50,18 @@ class LinkStatus(
             LinkState.SEARCHING -> endpoint?.let { "Trying $it" } ?: "No iPhone found yet"
         }
 
+    /**
+     * Left footer on a card or nav page: null while linked (the page shows its own source and
+     * time, or ETA), otherwise the link state, so "not paired" (PROTOCOL.md section 6) and
+     * "looking for the iPhone" stay readable on every page, not only on the empty screen.
+     */
+    val pageFooterText: String?
+        get() = when (state) {
+            LinkState.LINKED -> null
+            LinkState.NEEDS_PAIRING -> Pairing.REJECTED_FOOTER
+            else -> footerText
+        }
+
     /** True when the footer is amber (#FFB300): every state except [LinkState.LINKED]. */
     val isWarning: Boolean get() = state != LinkState.LINKED
 

@@ -119,7 +119,27 @@ class UploaderTest {
         val r = up.upload(f)
         assertFalse(r.ok)
         assertTrue(r.error!!, r.error!!.startsWith("no file_ack"))
+        assertTrue(r.timedOut)
+        assertNull(r.ack)
         assertTrue(System.currentTimeMillis() - t0 >= 290)
+    }
+
+    @Test
+    fun ackBeforeFileEndIsALateAnswerToAnEarlierAttemptAndIgnored() {
+        val (f, data) = file("IMG_0002.jpg", 600 * 1024)
+        val phone = FakePhone()
+        val up = Uploader(phone)
+        phone.uploader = up
+        val id = Uploader.idFor(f)
+        val early = JSONObject().put("type", "file_ack").put("id", id).put("ok", false).put("error", "from an earlier attempt")
+        var earlyMatched: Boolean? = null
+        // While the chunks are still going out, a file_ack for the same id arrives.
+        phone.onChunk = { n -> if (n == 1) earlyMatched = up.handleAck(early) }
+        val r = up.upload(f)
+        assertEquals(false, earlyMatched)
+        assertTrue(r.error, r.ok) // the answer to this attempt's file_end counts
+        assertEquals(TestUtil.sha256Hex(data), r.sha256)
+        assertFalse(r.timedOut)
     }
 
     @Test
@@ -136,6 +156,7 @@ class UploaderTest {
         val r = up.upload(f)
         assertFalse(r.ok)
         assertTrue(r.error!!, r.error!!.startsWith("cancelled"))
+        assertFalse(r.timedOut)
         assertTrue(System.currentTimeMillis() - t0 < 10_000)
         // The next upload works normally.
         phone.ackMode = "ok"

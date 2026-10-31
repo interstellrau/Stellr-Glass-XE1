@@ -152,6 +152,21 @@ class AppLogicTest {
         assertEquals("Not paired", rejected.with(endpoint = null).footerText)
     }
 
+    @Test
+    fun cardAndNavPagesShowTheLinkStateWhileNotLinked() {
+        val ep = Endpoint("172.20.10.1", 9090, Endpoint.VIA_HOTSPOT)
+        // Linked: the page keeps its own footer (source and time, or ETA).
+        assertNull(LinkStatus(LinkState.LINKED, "Alexander's iPhone", ep, null).pageFooterText)
+        // Not paired: readable on every page, not only on the empty screen (PROTOCOL.md section 6).
+        val rejected = LinkStatus(LinkState.NEEDS_PAIRING, null, ep, Rejected.PAIRING_REQUIRED)
+        assertEquals("Not paired: pair on your iPhone", rejected.pageFooterText)
+        assertEquals(Pairing.REJECTED_FOOTER, rejected.with(endpoint = null).pageFooterText)
+        // Looking or connecting: the same text as the empty screen's footer.
+        assertEquals("Trying 172.20.10.1:9090 (hotspot)", LinkStatus(LinkState.SEARCHING, null, ep, null).pageFooterText)
+        assertEquals("No iPhone found yet", LinkStatus.INITIAL.pageFooterText)
+        assertEquals("Connecting to 172.20.10.1:9090", LinkStatus(LinkState.CONNECTING, null, ep, null).pageFooterText)
+    }
+
     // ----- pages ----------------------------------------------------------------------------
 
     @Test
@@ -380,6 +395,22 @@ class AppLogicTest {
     }
 
     // ----- media re-scan timer ----------------------------------------------------------------
+
+    @Test
+    fun uploadOutcomeDecidesWhenAFileIsTriedAgain() {
+        fun result(ok: Boolean, error: String?, ack: JSONObject?, timedOut: Boolean = false) =
+            Uploader.Result("IMG_1.jpg:10", ok, error, 10, null, ack, timedOut)
+        val okAck = j("{\"type\":\"file_ack\",\"id\":\"IMG_1.jpg:10\",\"ok\":true}")
+        val refusedAck = j("{\"type\":\"file_ack\",\"id\":\"IMG_1.jpg:10\",\"ok\":false,\"error\":\"size mismatch\"}")
+        assertEquals(MediaRules.Next.SYNCED, MediaRules.next(result(true, null, okAck)))
+        assertEquals(MediaRules.Next.NEXT_SESSION, MediaRules.next(result(false, "size mismatch", refusedAck)))
+        // No file_ack within 60 s: next session, not the next scan (PROTOCOL.md section 5).
+        assertEquals(MediaRules.Next.NEXT_SESSION, MediaRules.next(result(false, "no file_ack within 60 s", null, timedOut = true)))
+        // Link trouble: try again at the next scan.
+        for (e in listOf("not connected", "link dropped", "cancelled", "cancelled (link dropped)", "file changed during upload")) {
+            assertEquals(e, MediaRules.Next.NEXT_SCAN, MediaRules.next(result(false, e, null)))
+        }
+    }
 
     @Test
     fun nextCheckDelayForFilesStillBeingWritten() {

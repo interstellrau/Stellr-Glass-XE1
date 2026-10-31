@@ -22,6 +22,9 @@ object Pairing {
     /** Shown in place of the empty-state text after `rejected`. */
     const val REJECTED_HINT = "Pair on your iPhone: GlassBridge › Glass › Pair Glass"
 
+    /** The short form for the one-line footer of a card or nav page after `rejected`. */
+    const val REJECTED_FOOTER = "Not paired: pair on your iPhone"
+
     /** Longest token Glass will store (the protocol's are 32 characters). */
     const val MAX_TOKEN_LENGTH = 256
 

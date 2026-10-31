@@ -52,7 +52,7 @@ data class Endpoint @JvmOverloads constructor(
  * [Listener.onFrame].
  *
  * Threading: every listener callback runs on the link thread, in order: onConnecting,
- * onConnected, onFrame..., onDisconnected. Callbacks must not block (hop to the main
+ * onConnected, onFrame..., onDisconnected, then onRetryWait before each wait. Callbacks must not block (hop to the main
  * thread for UI state). [send] may be called from any thread; it blocks while another frame
  * is being written, so call it off the main thread, or use [sendAsync]. A listener that
  * throws is logged and ignored.
@@ -78,6 +78,12 @@ class BridgeConnection(
 
         /** The link that [onConnected] reported has gone. Not called for failed attempts. */
         fun onDisconnected(reason: String)
+
+        /**
+         * The loop is about to wait [ms] before the next attempt (after a failed attempt, a
+         * rejection or a lost link). The service uses it to let the CPU sleep again.
+         */
+        fun onRetryWait(ms: Long) {}
     }
 
     companion object {
@@ -250,6 +256,7 @@ class BridgeConnection(
                     }
                 }
                 BridgeLog.i("Reconnecting in " + formatSeconds(wait))
+                safely("onRetryWait") { listener.onRetryWait(wait) }
                 pause(wait)
             }
         } catch (t: Throwable) {

@@ -19,8 +19,11 @@ import java.util.concurrent.atomic.AtomicInteger
  *   on the link thread through [handleFrame]) or the main thread.
  * - Uploads are serialized: a second [upload] waits for the first.
  * - The upload fails if the file's size changes while it's being sent (the file_end is then
- *   not sent), if the link drops, if [cancelAll] is called, or if no ack arrives in time.
+ *   not sent), if the link drops, if [cancelAll] is called, or if no ack arrives in time
+ *   ([Result.timedOut]).
  * - Only `ok:true` counts as success; the caller marks the file synced only then.
+ * - Only a `file_ack` that arrives after this attempt's `file_end` counts: the iPhone acks at
+ *   `file_end`, so an earlier one is a late answer to a previous attempt and is ignored.
  */
 class Uploader @JvmOverloads constructor(
     private val sender: FrameSender,
@@ -33,15 +36,17 @@ class Uploader @JvmOverloads constructor(
 
     /**
      * The outcome of one [upload]. [sha256] is the hex SHA-256 of the bytes sent (null if
-     * not all were sent); [ack] is the `file_ack` object when one arrived.
+     * not all were sent); [ack] is the `file_ack` object when one arrived. [timedOut] is true
+     * when everything was sent but no `file_ack` came within the ack timeout.
      */
-    class Result(
+    class Result @JvmOverloads constructor(
         val id: String,
         val ok: Boolean,
         val error: String?,
         val bytesSent: Long,
         val sha256: String?,
-        val ack: JSONObject?
+        val ack: JSONObject?,
+        val timedOut: Boolean = false
     ) {
         override fun toString(): String =
             if (ok) "Upload $id ok ($bytesSent bytes)" else "Upload $id failed: $error"
@@ -51,6 +56,8 @@ class Uploader @JvmOverloads constructor(
         val latch = CountDownLatch(1)
         @Volatile var ack: JSONObject? = null
         @Volatile var cancelled = false
+        /** Set just before this attempt's `file_end` goes out; acks before that are ignored. */
+        @Volatile var endSent = false
     }
 
     private val waiters = HashMap<String, Waiter>()
@@ -67,10 +74,18 @@ class Uploader @JvmOverloads constructor(
     fun handleFrame(frame: Frame): Boolean =
         if (frame.type == MsgType.FILE_ACK) handleAck(frame.obj) else false
 
-    /** Delivers a `file_ack` object. Returns true if an upload was waiting for its id. */
+    /**
+     * Delivers a `file_ack` object. Returns true if an upload has sent `file_end` for its id
+     * and is waiting for it. An ack for an upload that hasn't reached `file_end` yet answers an
+     * earlier attempt of the same file and is ignored (false).
+     */
     fun handleAck(ack: JSONObject): Boolean {
         val id = Json.text(ack, "id") ?: return false
         val w = synchronized(waiters) { waiters[id] } ?: return false
+        if (!w.endSent) {
+            BridgeLog.w("file_ack for $id before its file_end (a late answer to an earlier attempt); ignored")
+            return false
+        }
         w.ack = ack
         w.latch.countDown()
         return true
@@ -119,6 +134,8 @@ class Uploader @JvmOverloads constructor(
             }
             if (file.length() != size) return fail(id, "file changed during upload", sent)
             if (cancelGeneration.get() != generation) return fail(id, "cancelled", sent)
+            // Before the send: the ack can arrive on the link thread before send() returns.
+            waiter.endSent = true
             if (!sender.send(Msg.fileEnd(id))) return fail(id, "link dropped", sent)
             val hex = toHex(digest.digest())
             val arrived = try {
@@ -128,7 +145,7 @@ class Uploader @JvmOverloads constructor(
                 return fail(id, "interrupted", sent)
             }
             if (waiter.cancelled) return fail(id, "cancelled (link dropped)", sent)
-            if (!arrived) return fail(id, "no file_ack within " + (ackTimeoutMs / 1000) + " s", sent)
+            if (!arrived) return fail(id, "no file_ack within " + (ackTimeoutMs / 1000) + " s", sent, timedOut = true)
             val ack = waiter.ack!!
             val ok = Json.bool(ack, "ok") == true
             val error = if (ok) null else (Json.str(ack, "error") ?: "the iPhone refused the file")
@@ -144,9 +161,9 @@ class Uploader @JvmOverloads constructor(
         }
     }
 
-    private fun fail(id: String, error: String, sent: Long): Result {
+    private fun fail(id: String, error: String, sent: Long, timedOut: Boolean = false): Result {
         BridgeLog.w("Upload $id failed: $error")
-        return Result(id, false, error, sent, null, null)
+        return Result(id, false, error, sent, null, null, timedOut)
     }
 
     companion object {
@@ -231,6 +248,29 @@ object MediaRules {
             if (c != 0) c else a.name.compareTo(b.name)
         })
         return out
+    }
+
+    /** What MediaSync does with a file after one [Uploader.upload]. */
+    enum class Next {
+        /** `file_ack ok:true`: mark it synced for good. */
+        SYNCED,
+
+        /**
+         * The iPhone answered `ok:false`, or sent no `file_ack` within the timeout: not synced.
+         * Skip it until sync is next turned on (the next session, PROTOCOL.md section 5
+         * `file_ack`) and carry on with newer files, so one file can't block the rest.
+         */
+        NEXT_SESSION,
+
+        /** Link dropped, cancelled, not connected, or a local problem: stop and try at the next scan. */
+        NEXT_SCAN
+    }
+
+    @JvmStatic
+    fun next(r: Uploader.Result): Next = when {
+        r.ok -> Next.SYNCED
+        r.ack != null || r.timedOut -> Next.NEXT_SESSION
+        else -> Next.NEXT_SCAN
     }
 
     /** Longest wait [nextCheckDelayMs] returns (a file dated in the future is checked again then). */

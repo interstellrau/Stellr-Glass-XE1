@@ -9,8 +9,9 @@ import org.json.JSONObject
  *
  * The Android side (WifiProvisioner) builds a WifiConfiguration from it: SSID quoted with
  * [quoted]; WPA as KeyMgmt.WPA_PSK with preSharedKey = [pskValue]; WEP with
- * wepKeys[0] = [wepKeyValue]; then removes networks with the same SSID, enableNetwork(id,
- * false) and saveConfiguration().
+ * wepKeys[0] = [wepKeyValue]; then removes networks with the same SSID (the one Glass is on
+ * is updated in place instead, so the link doesn't drop), enableNetwork(id, false) and
+ * saveConfiguration().
  */
 class WifiNetwork(val ssid: String, val password: String?, val security: String) {
 

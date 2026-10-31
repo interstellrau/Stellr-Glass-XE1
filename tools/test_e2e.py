@@ -801,6 +801,7 @@ class SessionTests(ToolTestCase):
         c.hello()
         c.expect("welcome")
         c.expect("sync")
+        c.expect("nav_end")     # PROTOCOL.md section 4: no guidance -> nav_end on accept
         c.send({"type": "file_begin", "id": "a.jpg:10", "name": "a.jpg", "size": 10, "mime": "image/jpeg",
                 "taken": 1})
         c.send({"type": "file_chunk", "id": "a.jpg:10", "offset": 0}, b"12345")
@@ -1093,6 +1094,7 @@ class HeartbeatTests(ToolTestCase):
         c.hello()
         c.expect("welcome")
         c.expect("sync")
+        c.expect("nav_end")
         t0 = time.monotonic()
         f = c.next_frame(timeout=4, skip_pings=False)     # don't answer
         self.assertEqual(f.type, "ping")

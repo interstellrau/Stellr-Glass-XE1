@@ -262,6 +262,25 @@ class BridgeConnectionTest {
     }
 
     @Test
+    fun onRetryWaitComesBeforeEveryWaitWithItsLength() {
+        // BridgeService lets the CPU sleep again here (the 60 s alarm tick's wake lock).
+        val waits = LinkedBlockingQueue<Long>()
+        val listener = object : BridgeConnection.Listener {
+            override fun onConnecting() {}
+            override fun onConnected(endpoint: Endpoint) {}
+            override fun onFrame(frame: Frame) {}
+            override fun onDisconnected(reason: String) {}
+            override fun onRetryWait(ms: Long) { waits.add(ms) }
+        }
+        val c = BridgeConnection({ null }, { Msg.hello("Glass 1", "XE24", "test", null) }, listener)
+        bc = c
+        c.start()
+        assertEquals(100L, waits.poll(3, TimeUnit.SECONDS))
+        assertEquals(200L, waits.poll(3, TimeUnit.SECONDS))
+        assertEquals(400L, waits.poll(3, TimeUnit.SECONDS))
+    }
+
+    @Test
     fun connectFailureIsRetried() {
         val dead = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         val deadPort = dead.localPort

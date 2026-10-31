@@ -18,6 +18,11 @@ import java.io.File
  * KeyMgmt.NONE. Saved networks with the same SSID are removed first, then
  * `enableNetwork(id, false)` (other saved networks stay enabled) and `saveConfiguration()`.
  *
+ * Except the network Glass is on right now: removing it would make wpa_supplicant
+ * deauthenticate, which drops the iPhone link (and the `wifi_result` with it). That entry is
+ * updated in place with `updateNetwork` instead, which leaves the current association alone;
+ * new settings take effect the next time Glass joins it.
+ *
  * Blocking (it may wait for Wi-Fi to turn on): call it from a worker thread. Passwords are
  * never logged.
  */
@@ -55,20 +60,38 @@ class WifiProvisioner(context: Context) {
                 else -> cfg.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
             }
 
+            val activeId = wifi.connectionInfo?.networkId ?: -1
+            var keepId = -1
             val existing = wifi.configuredNetworks
             if (existing != null) {
                 for (c in existing) {
                     if (c.SSID == quotedSsid || c.SSID == n.ssid) {
+                        if (activeId != -1 && c.networkId == activeId) {
+                            keepId = c.networkId
+                            continue
+                        }
                         val removed = wifi.removeNetwork(c.networkId)
                         BridgeLog.i("Removed saved network ${c.networkId} with the same SSID (${if (removed) "ok" else "refused"})")
                     }
                 }
             }
 
-            val id = wifi.addNetwork(cfg)
-            if (id < 0) {
-                BridgeLog.w("addNetwork refused $n")
-                return "Glass refused the network settings"
+            val id: Int
+            if (keepId != -1) {
+                // Glass is on this network now: update it in place, never remove it.
+                cfg.networkId = keepId
+                id = wifi.updateNetwork(cfg)
+                if (id < 0) {
+                    BridgeLog.w("updateNetwork refused $n (network $keepId, the one Glass is on); left as it was")
+                    return "Glass refused the network settings (it's the network Glass is on now)"
+                }
+                BridgeLog.i("Updated network $keepId in place: Glass is on it now, so it stays connected")
+            } else {
+                id = wifi.addNetwork(cfg)
+                if (id < 0) {
+                    BridgeLog.w("addNetwork refused $n")
+                    return "Glass refused the network settings"
+                }
             }
             wifi.enableNetwork(id, false)
             if (!wifi.saveConfiguration()) BridgeLog.w("saveConfiguration returned false for $n")

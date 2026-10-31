@@ -24,8 +24,9 @@ Behaviour (normal mode):
   * After accepting: welcome, sync (on by default, like the iPhone app; --no-sync or
     'sync off' before Glass connects keeps it off), screencast if on, queued cards
     (kept 10 minutes while no Glass is connected), then the current nav card (not
-    announced). With sync on, a real Glass uploads its whole DCIM/Camera backlog here
-    and marks each file synced on Glass for good, so those files never reach the iPhone.
+    announced) or, with no nav card, nav_end (not in --selftest). With sync on, a real
+    Glass uploads its whole DCIM/Camera backlog here and marks each file synced (Glass
+    clears that record when it pairs with a new phone, so the iPhone gets them too).
   * Heartbeat: ping after 15 s of silence, drop at 30 s. ping is always answered.
   * Uploads follow the iPhone's MediaReceiver rules: a chunk whose offset isn't the
     number of bytes received so far fails the transfer ("chunks out of order"); at
@@ -772,6 +773,9 @@ class PhoneServer(object):
                 nav = dict(self.nav)
                 nav["announce"] = False
                 s.send(nav)
+            elif not self.selftest:
+                # PROTOCOL.md section 4: no guidance -> nav_end, so Glass drops a stale nav card.
+                s.send({"type": "nav_end"})
             if self.selftest:
                 s.send({"type": "ping"})
                 log("SELFTEST welcome, sync, screencast and ping sent")
@@ -1083,9 +1087,9 @@ def main(argv=None):
                     "Glass card screen is in front)" % shlex.quote(os.path.abspath(view)))
         if server.sync_enabled:
             log("Photo sync is ON (like the iPhone app). On connect, Glass uploads every photo and "
-                "video in its DCIM/Camera not yet synced, oldest first, and marks each one synced "
-                "on Glass for good: those files will NOT be sent to the iPhone later. To avoid "
-                "that, type 'sync off' before Glass connects, or restart with --no-sync.")
+                "video in its DCIM/Camera not yet synced, oldest first. Glass forgets what it "
+                "synced when it pairs with a new phone, so the iPhone still gets them later. To "
+                "skip the upload here, type 'sync off' before Glass connects, or use --no-sync.")
         else:
             log("Photo sync is off (--no-sync). Type 'sync on' to receive Glass photos and videos.")
         log("Type 'help' for commands.")

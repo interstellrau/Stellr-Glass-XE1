@@ -125,7 +125,7 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
 | Mock GPS | `status`, then `loc -34.9285 138.6007`, then take a photo | `fake_phone` prints `mock_location: true`. The photo has a geotag (check in Photos on the Mac). If false: `python3 tools/glass_adb.py mock`, then `python3 tools/glass_adb.py start`. | 8 |
 | Wi-Fi push | `wifi "Test Net" testpassword` | `WIFI Test Net: ok`. | |
 | Wi-Fi QR | On Glass: Settings › Wi-Fi. On the iPhone: Tools › Wi-Fi for Glass › Show QR code | Does XE24 still offer a QR scanner? If not, `wifi.json` and `wifi_add` cover it. | 7 |
-| Pair again | `forget`, then disconnect Glass's Wi-Fi briefly | Glass shows "Pair on your iPhone…" and retries every 5 s; `pair` re-pairs it with a new code. | |
+| Pair again | `forget`, then disconnect Glass's Wi-Fi briefly | Glass shows "Pair on your iPhone…" on the empty screen, or an amber "Not paired: pair on your iPhone" footer on a card, and retries every 5 s; `pair` re-pairs it with a new code. | |
 
 ## 4. Glass and iPhone together (milestone 8)
 

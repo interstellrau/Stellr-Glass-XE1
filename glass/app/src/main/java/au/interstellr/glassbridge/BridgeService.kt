@@ -3,6 +3,7 @@
 package au.interstellr.glassbridge
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -20,6 +21,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import au.interstellr.glassbridge.core.BridgeConnection
 import au.interstellr.glassbridge.core.BridgeLog
@@ -51,6 +53,11 @@ import java.util.concurrent.RejectedExecutionException
  *   from SharedPreferences `link` / `token` (PROTOCOL.md section 6).
  * - Dispatches every message type through [MessageRouter] (this class is the [GlassHandler]).
  * - `status` after `welcome`, every 60 s, on a battery % change and on `request_status`.
+ * - The 60 s tick (status, media re-scan, and a redial if the link is down) comes from an
+ *   exact ELAPSED_REALTIME_WAKEUP alarm, because Handler delays, Thread.sleep and the
+ *   reconnect backoff all stop while an unplugged Glass is in deep sleep. Each tick holds a
+ *   short PARTIAL_WAKE_LOCK so the status write (or the redial) finishes before Glass sleeps
+ *   again.
  * - TTS with QUEUE_ADD (dropped until TTS is ready), a ToneGenerator TONE_PROP_ACK chime for
  *   150 ms, and a 6 s SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP that also brings the card
  *   screen to the front if it isn't there (wake cards and new nav steps).
@@ -64,6 +71,19 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     companion object {
         const val NOTIFICATION_ID = 1
         const val STATUS_INTERVAL_MS = 60_000L
+
+        /** Private broadcast the 60 s alarm sends (setPackage keeps it inside this app). */
+        const val ACTION_TICK = "au.interstellr.glassbridge.TICK"
+
+        /** How long a tick keeps the CPU awake while linked: enough to write `status`. */
+        const val TICK_WAKE_LINKED_MS = 3_000L
+
+        /**
+         * ... and while not linked: discovery (Bonjour up to 8 s), a 5 s connect, hello/welcome.
+         * Released early if the attempt fails (onRetryWait).
+         */
+        const val TICK_WAKE_REDIAL_MS = 20_000L
+
         const val WAKE_MS = 6_000L
         const val CHIME_MS = 150
 
@@ -102,15 +122,19 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     @Volatile private var ttsReady = false
     private var tone: ToneGenerator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var tickWakeLock: PowerManager.WakeLock? = null
+    private var alarms: AlarmManager? = null
+    private var tickIntent: PendingIntent? = null
     private var lastBattery = -1
     private var lastNotificationText: String? = null
     private var receiversRegistered = false
 
-    private val statusTick = object : Runnable {
-        override fun run() {
-            sendStatus("every 60 s")
-            mediaSync.rescan()
-            main.postDelayed(this, STATUS_INTERVAL_MS)
+    /** Fallback for the tick if the alarm can't be set (it doesn't fire during deep sleep). */
+    private val statusTick = Runnable { onTick() }
+
+    private val tickReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            onTick()
         }
     }
 
@@ -137,6 +161,9 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
     // ----- lifecycle --------------------------------------------------------------------
 
+    // UnspecifiedRegisterReceiverFlag: the RECEIVER_(NOT_)EXPORTED flags start at API 26/33;
+    // Glass is API 19 only. The tick receiver only triggers status, a re-scan and a redial.
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onCreate() {
         super.onCreate()
         Logs.install()
@@ -175,6 +202,9 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
             wakeLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "GlassBridge:wake").apply {
                 setReferenceCounted(false)
             }
+            tickWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GlassBridge:tick").apply {
+                setReferenceCounted(false)
+            }
         } catch (e: RuntimeException) {
             BridgeLog.w("No wake lock: $e")
         }
@@ -184,12 +214,23 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
             registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             @Suppress("DEPRECATION")
             registerReceiver(connectivityReceiver, IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
+            registerReceiver(tickReceiver, IntentFilter(ACTION_TICK))
             receiversRegistered = true
         } catch (e: RuntimeException) {
             BridgeLog.w("Receivers not registered: $e")
         }
+        if (receiversRegistered) {
+            try {
+                alarms = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                tickIntent = PendingIntent.getBroadcast(this, 0, Intent(ACTION_TICK).setPackage(packageName), 0)
+            } catch (e: RuntimeException) {
+                BridgeLog.w("No alarm for the 60 s tick (it will pause while Glass sleeps): $e")
+                alarms = null
+                tickIntent = null
+            }
+        }
 
-        main.postDelayed(statusTick, STATUS_INTERVAL_MS)
+        scheduleTick()
         connection.start()
     }
 
@@ -208,14 +249,20 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
         BridgeLog.i("BridgeService stopping")
         current = null
         main.removeCallbacks(statusTick)
+        try {
+            tickIntent?.let { alarms?.cancel(it) }
+        } catch (e: RuntimeException) {
+        }
         GlassState.removeListener(this)
         if (receiversRegistered) {
             try {
                 unregisterReceiver(batteryReceiver)
                 unregisterReceiver(connectivityReceiver)
+                unregisterReceiver(tickReceiver)
             } catch (e: RuntimeException) {
             }
         }
+        releaseTickWakeLock()
         connection.stop()
         mediaSync.stop()
         mockGps.stop()
@@ -252,6 +299,11 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
             Screencast.configure(false, ScreencastCmd.DEFAULT_FPS)
             GlassState.onDisconnected(reason)
         }
+    }
+
+    override fun onRetryWait(ms: Long) {
+        // The redial a tick started is over (it failed); the CPU may sleep until the next tick.
+        main.post { releaseTickWakeLock() }
     }
 
     // ----- GlassHandler (link thread; must not block) ------------------------------------
@@ -376,6 +428,50 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     }
 
     // ----- internals --------------------------------------------------------------------
+
+    /**
+     * The 60 s tick (main thread): `status`, a media re-scan, and a redial straight away if
+     * the link is down (the backoff wait doesn't run while Glass sleeps). Holds the CPU awake
+     * for a few seconds so this work finishes; uploads hold their own wake lock (MediaSync).
+     */
+    private fun onTick() {
+        scheduleTick()
+        val connected = connection.isConnected
+        try {
+            tickWakeLock?.acquire(if (connected) TICK_WAKE_LINKED_MS else TICK_WAKE_REDIAL_MS)
+        } catch (e: RuntimeException) {
+            BridgeLog.w("Tick wake lock failed: $e")
+        }
+        sendStatus("every 60 s")
+        mediaSync.rescan()
+        if (!connected) connection.retryNow()
+    }
+
+    private fun releaseTickWakeLock() {
+        try {
+            tickWakeLock?.let { if (it.isHeld) it.release() }
+        } catch (e: RuntimeException) {
+            BridgeLog.w("Tick wake lock release failed: $e")
+        }
+    }
+
+    /** Sets the next tick STATUS_INTERVAL_MS from now: the wakeup alarm, else a Handler delay. */
+    private fun scheduleTick() {
+        main.removeCallbacks(statusTick)
+        val am = alarms
+        val pi = tickIntent
+        if (am != null && pi != null) {
+            try {
+                // setExact (API 19): on KitKat set() and setRepeating() are inexact and may be
+                // batched up to 75% of the interval late; status is meant to come every 60 s.
+                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + STATUS_INTERVAL_MS, pi)
+                return
+            } catch (e: RuntimeException) {
+                BridgeLog.w("Alarm not set ($e); the 60 s tick will pause while Glass sleeps")
+            }
+        }
+        main.postDelayed(statusTick, STATUS_INTERVAL_MS)
+    }
 
     /** Builds and sends `status` (main thread). Only once the iPhone has accepted this Glass. */
     private fun sendStatus(why: String) {

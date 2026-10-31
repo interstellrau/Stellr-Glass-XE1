@@ -38,8 +38,8 @@ import java.util.Date
  *
  * Built in code with px sizes, like the GDK's cards: black background, 40 px side margins,
  * title 30 px grey (#9E9E9E) on one line, body 44 px white (4 lines max), footer 24 px grey
- * with link state (empty screen) or source and time (cards) on the left and a "2/5" pager on
- * the right. All text sans-serif-light. The nav card is pinned at the front: a 170 px
+ * with link state (empty screen, and every page while not linked) or source and time (cards)
+ * on the left and a "2/5" pager on the right. All text sans-serif-light. The nav card is pinned at the front: a 170 px
  * [ManeuverView] on the left, the distance at 64 px and the instruction at 32 px (3 lines) on
  * the right, ETA and remaining distance in the footer. The footer turns amber (#FFB300)
  * whenever the iPhone isn't linked.
@@ -273,7 +273,8 @@ class MainActivity : Activity(), GlassState.Listener {
         navPage.visibility = View.GONE
         setTitle(card.title)
         bodyView.text = card.text
-        footerLeft.text = Deck.cardFooter(card.source, DateFormat.getTimeFormat(this).format(Date(card.time)))
+        footerLeft.text = link.pageFooterText
+            ?: Deck.cardFooter(card.source, DateFormat.getTimeFormat(this).format(Date(card.time)))
         setFooterColor(link)
         if (GlassState.cards.markShown(card.id) && !Deck.isLocalCard(card)) {
             BridgeService.current?.sendAck(card.id, Msg.EVENT_SHOWN)
@@ -286,7 +287,7 @@ class MainActivity : Activity(), GlassState.Listener {
         maneuverView.setManeuver(nav.maneuver)
         distanceView.text = Deck.navHeadline(nav)
         instructionView.text = nav.instruction
-        footerLeft.text = Deck.navFooter(nav)
+        footerLeft.text = link.pageFooterText ?: Deck.navFooter(nav)
         setFooterColor(link)
     }
 
