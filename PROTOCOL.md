@@ -64,7 +64,9 @@ newline, and then the next frame starts.
 1. Glass connects and sends `hello` (with `token` if it has one, §6).
 2. The iPhone either accepts it and replies `welcome`, or replies `rejected` and closes (§6).
 3. After accepting, the iPhone sends `sync`, then `screencast` if it's on, then any queued
-   cards, then the current `nav` card if guidance is active (not announced).
+   cards, then the current `nav` card if guidance is active (not announced), or `nav_end` if
+   it isn't (so Glass drops a nav card left over from a missed `nav_end` or an earlier run of
+   the app). Glass treats `nav_end` with no nav card as a no-op.
 4. Glass sends `status` straight after `welcome`.
 5. After that, either side can send at any time.
 
