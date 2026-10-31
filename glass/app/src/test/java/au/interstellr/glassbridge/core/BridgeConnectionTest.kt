@@ -4,6 +4,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -14,11 +15,13 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * BridgeConnection against a scripted in-JVM server on 127.0.0.1 (no Python needed):
  * hello, ping handling, heartbeat, watchdog, backoff, the 5 s retry after `rejected`,
- * protocol errors and stop().
+ * protocol errors and stop(); and silence measured on an injected clock (a fake one here,
+ * `SystemClock.elapsedRealtime` on Glass, which keeps counting in deep sleep).
  */
 class BridgeConnectionTest {
 
@@ -91,6 +94,39 @@ class BridgeConnectionTest {
         s.soTimeout = 15_000
         conns.add(s)
         return Peer(s)
+    }
+
+    /** Reads [p]'s frames on a daemon thread: each type, then "EOF" (clean end) or "ERR". */
+    private fun readInBackground(p: Peer): LinkedBlockingQueue<String> {
+        val q = LinkedBlockingQueue<String>()
+        Thread {
+            try {
+                while (true) q.add(p.read()?.type ?: break)
+                q.add("EOF")
+            } catch (e: Exception) {
+                q.add("ERR")
+            }
+        }.apply { isDaemon = true }.start()
+        return q
+    }
+
+    /** A fake [BridgeConnection.clockMs]: it only moves when the test moves it. */
+    private fun fakeClock(): AtomicLong {
+        val t = AtomicLong(5_000_000L)
+        BridgeConnection.clockMs = { t.get() }
+        return t
+    }
+
+    /** Connects with the protocol's 15 s / 30 s heartbeat and returns the peer after `welcome`. */
+    private fun connectWelcomed(rec: Rec): Peer {
+        BridgeConnection.PING_AFTER_MS = 15_000
+        BridgeConnection.DEAD_AFTER_MS = 30_000
+        startClient(rec)
+        val p = accept()
+        assertEquals("hello", p.read()!!.type)
+        p.send(JSONObject().put("type", "welcome").put("phone_name", "T"))
+        rec.waitFor("frame:welcome")
+        return p
     }
 
     @Test
@@ -296,5 +332,112 @@ class BridgeConnectionTest {
         assertEquals(3, tries.size)
         // Failed attempts don't produce onConnected/onDisconnected, only onConnecting.
         assertEquals(listOf("connecting", "connecting", "connecting", "connected"), (0 until 4).map { rec.next() })
+    }
+
+    // ----- silence on the injected clock ---------------------------------------------------
+
+    @Test
+    fun silenceIsMeasuredOnTheInjectedClockPingAtPingAfterCloseAtDeadAfter() {
+        val clock = fakeClock()
+        val rec = Rec()
+        val p = connectWelcomed(rec) // the silence timer starts at the fake time of the welcome
+        val rx = readInBackground(p)
+        // Real time passes, the injected clock doesn't: the watchdog (every 50 ms) sees no silence.
+        assertNull("ping although the injected clock didn't move", rx.poll(400, TimeUnit.MILLISECONDS))
+        clock.addAndGet(14_999)
+        assertNull("ping before PING_AFTER_MS", rx.poll(400, TimeUnit.MILLISECONDS))
+        clock.addAndGet(1) // 15 s of silence
+        assertEquals("ping", rx.poll(5, TimeUnit.SECONDS))
+        assertNull("only one ping per silence", rx.poll(300, TimeUnit.MILLISECONDS))
+        clock.addAndGet(14_999) // 29.999 s
+        assertNull(rx.poll(400, TimeUnit.MILLISECONDS))
+        assertTrue("closed before DEAD_AFTER_MS: ${rec.events}", rec.events.none { it.startsWith("disconnected:") })
+        clock.addAndGet(1) // 30 s
+        val reason = rec.waitFor("disconnected:", 5000)
+        assertTrue(reason, reason.contains("nothing received for 30 s"))
+        assertEquals("EOF", rx.poll(5, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun aReceivedFrameRestartsTheSilenceOnTheInjectedClock() {
+        val clock = fakeClock()
+        val rec = Rec()
+        val p = connectWelcomed(rec)
+        val rx = readInBackground(p)
+        clock.addAndGet(20_000)
+        assertEquals("ping", rx.poll(5, TimeUnit.SECONDS))
+        p.send(Msg.pong()) // received at +20 s: the silence starts again from there
+        rec.waitFor("frame:pong")
+        clock.addAndGet(29_999) // 49.999 s since the welcome, 29.999 s since the pong
+        assertEquals("ping", rx.poll(5, TimeUnit.SECONDS)) // a new silence gets its own ping
+        assertNull(rx.poll(300, TimeUnit.MILLISECONDS))
+        assertTrue("closed too early: ${rec.events}", rec.events.none { it.startsWith("disconnected:") })
+        clock.addAndGet(1)
+        assertTrue(rec.waitFor("disconnected:").contains("nothing received"))
+    }
+
+    @Test
+    fun aClockJumpLikeDeepSleepClosesAtTheNextWatchdogCheck() {
+        val clock = fakeClock()
+        val rec = Rec()
+        val p = connectWelcomed(rec)
+        val rx = readInBackground(p)
+        assertNull(rx.poll(300, TimeUnit.MILLISECONDS))
+        // Glass slept for 10 minutes and nothing arrived (System.nanoTime would have stopped).
+        clock.addAndGet(10 * 60_000L)
+        val reason = rec.waitFor("disconnected:", 2000) // the next 50 ms watchdog check
+        assertTrue(reason, reason.contains("nothing received"))
+        // Straight to closed: past DEAD_AFTER_MS there's no ping first.
+        assertEquals("EOF", rx.poll(5, TimeUnit.SECONDS))
+        // ... and the loop dials again as after any lost link.
+        assertEquals("hello", accept().read()!!.type)
+    }
+
+    @Test
+    fun checkSilenceRunsTheWatchdogCheckOnTheCallersThread() {
+        // As BridgeService's 60 s alarm tick does: the watchdog thread's own sleep doesn't run
+        // while Glass is suspended, so here it never gets to check.
+        BridgeConnection.WATCHDOG_TICK_MS = 10 * 60_000L
+        val clock = fakeClock()
+        val rec = Rec()
+        val p = connectWelcomed(rec)
+        val c = bc!!
+        val rx = readInBackground(p)
+        clock.addAndGet(14_999)
+        assertFalse(c.checkSilence())
+        assertNull(rx.poll(300, TimeUnit.MILLISECONDS))
+        clock.addAndGet(1)
+        assertFalse(c.checkSilence()) // 15 s: one ping, still linked
+        assertEquals("ping", rx.poll(5, TimeUnit.SECONDS))
+        assertFalse(c.checkSilence())
+        assertNull("a second ping in the same silence", rx.poll(300, TimeUnit.MILLISECONDS))
+        assertTrue(c.isConnected)
+        // Asleep for a minute with nothing received, then the tick checks.
+        clock.addAndGet(60_000)
+        assertTrue(c.checkSilence())
+        assertFalse("closed by the time checkSilence returns", c.isConnected)
+        assertFalse("already closed", c.checkSilence())
+        val reason = rec.waitFor("disconnected:")
+        assertTrue(reason, reason.contains("nothing received"))
+        assertEquals("EOF", rx.poll(5, TimeUnit.SECONDS))
+        assertEquals("hello", accept().read()!!.type) // the loop dials again
+    }
+
+    @Test
+    fun checkSilenceWithoutALinkDoesNothing() {
+        val c = BridgeConnection({ null }, { Msg.hello("Glass 1", "XE24", "test", null) }, Rec())
+        assertFalse(c.checkSilence()) // never started
+        bc = c
+        c.start()
+        assertFalse(c.checkSilence()) // started, nothing found
+    }
+
+    @Test
+    fun resetTimingsRestoresTheMonotonicClock() {
+        BridgeConnection.clockMs = { 42L }
+        assertEquals(42L, BridgeConnection.clockMs())
+        BridgeConnection.resetTimings()
+        val want = System.nanoTime() / 1_000_000L
+        assertTrue(Math.abs(BridgeConnection.clockMs() - want) < 1000)
     }
 }

@@ -79,9 +79,9 @@ The Mac pretends to be Glass. This tests the iPhone app on its own.
 | Cards | Tools › Send a card | `fake_glass` prints the card and acks it. "Also speak" also prints a `speak`. | |
 | Photos | Allow Photos when asked | The upload lands in Photos with the Mac's file date; Media tab › Recent shows "saved". | 9 |
 | Screencast | Media › Mirror Glass screen | The frame from `gb_frame.jpg` shows. | |
-| Wi-Fi | Tools › Wi-Fi for Glass › Send to connected Glass | `fake_glass` prints `wifi_add`; the result line says ok. | |
+| Wi-Fi | Tools › Wi-Fi for Glass › Send to connected Glass | `fake_glass` prints `WIFI_ADD`; the result line says ok, or gives the same error real Glass would (a WPA password must be 8–63 characters). | |
 | Phone name | Tools › Name shown on Glass, then restart `fake_glass` | The welcome carries your name. Without it, iOS reports just "iPhone". | 11 |
-| Rejected | Stop `fake_glass`, Glass tab › Forget Glass, start `fake_glass` again | It prints `rejected pairing_required` and retries every 5 s; the Glass tab shows an orange note. Tap Pair Glass: it pairs within 5 s. | |
+| Rejected | Glass tab › Forget Glass (this drops `fake_glass`) | It prints `Rejected: pairing_required` and retries every 5 s; the Glass tab shows an orange note. Tap Pair Glass: it pairs within 5 s. | |
 | Background | Settings › Stay connected in background on, lock the iPhone for 5 minutes | `fake_glass` keeps the link: no disconnects, pings answered. Note how long it survives. | 3 |
 | Shortcuts | Shortcuts app › new shortcut › Send to Glass, run it with GlassBridge closed | `fake_glass` prints the card; the dialog says "Sent to Glass." If it doesn't run in the background, the fallback is `openAppWhenRun = true`. | 10 |
 | Navigation | Navigate › search › Walk › Start on Glass, then walk around the block | `fake_glass` prints `nav` frames: the depart step, then turns with distances; `announce` near each turn; `nav_end` on arrival or End. Check the instructions are English (Adelaide, English (Australia)). | 12 |
@@ -99,8 +99,9 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
    deletes `wifi.json`):
    `python3 tools/glass_adb.py wifi "<network>" "<password>" WPA`
 3. Mac IP: `ipconfig getifaddr en0`
-4. Terminal A: `python3 tools/fake_phone.py` (its pairing window is open for 120 s at start;
-   type `pair` to reopen it)
+4. Terminal A: `python3 tools/fake_phone.py --no-sync` (its pairing window is open for 120 s at
+   start; type `pair` to reopen it). `--no-sync` stops Glass uploading its whole camera backlog
+   to the Mac straight away; type `sync on` at the photo check.
 5. Terminal B: `python3 tools/glass_adb.py setup <mac-ip>`. This runs install again (harmless),
    mock (allow mock locations), config (`config.json` → the Mac), start (the service) and
    launch (the card screen).
@@ -120,12 +121,12 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
 | Notification | `notify Messages | Are you free?` | The screen wakes, chime, the card comes to the front. Tap: `ACK … tapped` then `dismissed`. | |
 | Speech | `speak Hello from GlassBridge` | Spoken through the bone-conduction speaker. | |
 | Nav | `nav left 120 Turn left onto King William Street`, then `nav left 40 Turn left onto King William Street`, then `nav arrive 0 Arrive at Rundle Mall` | The pinned nav card with a left arrow, "120 m", spoken turn on the first; the distance updates; "Arrived". `navend` removes it. | |
-| Photo sync | Take a photo with the camera button | It arrives in `received/` on the Mac (`sync` is on by default). Videos upload when recording ends. | |
+| Photo sync | `sync on`, then take a photo with the camera button | Older unsynced shots upload first, then the new one, into `received/` on the Mac. Videos upload when recording ends. Glass forgets what it synced when it pairs with the iPhone in part 4, so the iPhone gets them all too. | |
 | Screencast | `cast on` | Frames in `received/frames/` while the card screen is in front. `cast off` stops. | |
-| Mock GPS | `status`, then `loc -34.9285 138.6007`, then take a photo | `fake_phone` prints `mock_location: true`. The photo has a geotag (check in Photos on the Mac). If false: `python3 tools/glass_adb.py mock`, then `python3 tools/glass_adb.py start`. | 8 |
+| Mock GPS | `status`, then `loc -34.9285 138.6007`, then take a photo | `fake_phone`'s STATUS line shows `mock_location True`. The photo has a geotag (check in Photos on the Mac). If false: `python3 tools/glass_adb.py mock`, then `python3 tools/glass_adb.py start`. | 8 |
 | Wi-Fi push | `wifi "Test Net" testpassword` | `WIFI Test Net: ok`. | |
 | Wi-Fi QR | On Glass: Settings › Wi-Fi. On the iPhone: Tools › Wi-Fi for Glass › Show QR code | Does XE24 still offer a QR scanner? If not, `wifi.json` and `wifi_add` cover it. | 7 |
-| Pair again | `forget`, then disconnect Glass's Wi-Fi briefly | Glass shows "Pair on your iPhone…" on the empty screen, or an amber "Not paired: pair on your iPhone" footer on a card, and retries every 5 s; `pair` re-pairs it with a new code. | |
+| Pair again | `forget` (this drops the link) | Glass reconnects, is rejected, and shows "Pair on your iPhone…" on the empty screen, or an amber "Not paired: pair on your iPhone" footer on a card, and retries every 5 s; `pair` re-pairs it with a new code. | |
 
 ## 4. Glass and iPhone together (milestone 8)
 
@@ -142,8 +143,9 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
 | Cards, status, Find my Glass | Glass tab shows real battery and storage; Last seen updates. | |
 | Mock GPS from the phone | Share location on; `status.mock_location` true in the Glass tab. | 8 |
 | Navigation on a real walk | Turn cards with arrows, spoken turns at about 40 m, rerouting when you go off route, "Arrived". | 12 |
-| Glass photo to Photos | A Glass photo or video lands in iPhone Photos with the right date. | 9 |
+| Glass photo to Photos | A Glass photo or video lands in iPhone Photos with the right date. The shots already sent to the Mac in part 3 upload again, because this is a new pairing. | 9 |
 | Locked phone | Lock the iPhone with Stay connected on: Glass stays linked (footer "Connected"), and Last seen keeps updating. | 3 |
+| Glass asleep | Unplug Glass from USB and let its screen go off for 3 minutes | The Glass tab's Status footer ("Updated HH:MM:SS") keeps moving about every 60 s: a wake alarm sends status while Glass sleeps. A card with Chime and wake still wakes it. | |
 | Bonjour (optional) | Hotspot off; Glass and iPhone on the same home Wi-Fi; no `config.json`. Glass finds the iPhone through `_glassbridge._tcp` within 8 s. | 6 |
 
 ## Open questions to settle

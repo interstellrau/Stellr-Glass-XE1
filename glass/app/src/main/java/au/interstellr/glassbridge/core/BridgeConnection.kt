@@ -47,9 +47,11 @@ data class Endpoint @JvmOverloads constructor(
  * A watchdog thread per link checks every [WATCHDOG_TICK_MS]: after [PING_AFTER_MS] with
  * nothing received it sends one `ping`; after [DEAD_AFTER_MS] it closes the socket, which
  * also unblocks a reader stuck mid-payload or a writer stuck on a full socket. Every received
- * frame resets the silence timer. Incoming `ping` is answered with `pong` here and not
- * passed on; every other frame (including `pong`, `welcome` and `rejected`) goes to
- * [Listener.onFrame].
+ * frame resets the silence timer. Silence is measured on [clockMs] (BridgeService makes that
+ * a clock that keeps counting in deep sleep), and [checkSilence] runs the same check on
+ * demand, because the watchdog thread's sleep stops while the CPU is suspended. Incoming
+ * `ping` is answered with `pong` here and not passed on; every other frame (including
+ * `pong`, `welcome` and `rejected`) goes to [Listener.onFrame].
  *
  * Threading: every listener callback runs on the link thread, in order: onConnecting,
  * onConnected, onFrame..., onDisconnected, then onRetryWait before each wait. Callbacks must not block (hop to the main
@@ -95,7 +97,19 @@ class BridgeConnection(
         @Volatile @JvmStatic var BACKOFF_MAX_MS = 30_000L
         @Volatile @JvmStatic var REJECTED_RETRY_MS = 5_000L
 
-        /** Restores the protocol's timings (tests call this when they're done). */
+        /** The default [clockMs]: monotonic, but it stops while the CPU is suspended. */
+        private val MONOTONIC_MS: () -> Long = { System.nanoTime() / 1_000_000L }
+
+        /**
+         * The clock (milliseconds, any origin) that silence is measured on. BridgeService sets
+         * `SystemClock.elapsedRealtime`, which keeps counting while Glass is in deep sleep, so a
+         * link that died silently during sleep is closed at the first check after waking.
+         * Set it before [start]: times read from two different clocks can't be compared.
+         * Tests set a fake clock; [resetTimings] restores the default.
+         */
+        @Volatile @JvmStatic var clockMs: () -> Long = MONOTONIC_MS
+
+        /** Restores the protocol's timings and the default clock (tests call this when they're done). */
         @JvmStatic
         fun resetTimings() {
             PING_AFTER_MS = 15_000L
@@ -105,9 +119,10 @@ class BridgeConnection(
             BACKOFF_START_MS = 2_000L
             BACKOFF_MAX_MS = 30_000L
             REJECTED_RETRY_MS = 5_000L
+            clockMs = MONOTONIC_MS
         }
 
-        private fun now(): Long = System.nanoTime() / 1_000_000L
+        private fun now(): Long = clockMs()
 
         private fun closeQuietly(s: Socket) {
             try {
@@ -186,6 +201,19 @@ class BridgeConnection(
     /** Closes the current link (if any); the loop reconnects with the normal backoff. */
     fun drop(reason: String) {
         link?.let { close(it, reason) }
+    }
+
+    /**
+     * Runs the watchdog's check now, on the caller's thread: closes the link if nothing has been
+     * received for [DEAD_AFTER_MS], or sends the one `ping` once [PING_AFTER_MS] has passed.
+     * BridgeService calls it from the 60 s alarm tick: the watchdog thread's sleep doesn't run
+     * while the CPU is suspended, so this makes the check happen inside the tick's wake lock,
+     * before the tick decides whether to redial. Returns true if this call closed the link.
+     * Never blocks (the ping is written on its own thread). Safe from any thread.
+     */
+    fun checkSilence(): Boolean {
+        val l = link ?: return false
+        return checkSilence(l)
     }
 
     /**
@@ -376,20 +404,7 @@ class BridgeConnection(
             try {
                 while (!l.isClosed) {
                     Thread.sleep(WATCHDOG_TICK_MS)
-                    if (l.isClosed) break
-                    val silence = now() - l.lastRx
-                    if (silence >= DEAD_AFTER_MS) {
-                        close(l, "nothing received for " + formatSeconds(DEAD_AFTER_MS))
-                        break
-                    }
-                    if (silence >= PING_AFTER_MS && !l.pingSent) {
-                        l.pingSent = true
-                        // On its own thread: if a writer is stuck on a full socket, the ping
-                        // waits for it, but the watchdog keeps counting towards DEAD_AFTER_MS.
-                        Thread({ writeOn(l, Msg.ping(), null, 0) }, "GlassBridge-ping")
-                            .apply { isDaemon = true }
-                            .start()
-                    }
+                    checkSilence(l)
                 }
             } catch (e: InterruptedException) {
                 // exit
@@ -397,6 +412,32 @@ class BridgeConnection(
         }, "GlassBridge-watchdog")
         t.isDaemon = true
         t.start()
+    }
+
+    /**
+     * One silence check of [l] (the watchdog thread every [WATCHDOG_TICK_MS], or [checkSilence]).
+     * Synchronized on the link so the two callers can't both send the ping. Returns true if
+     * this call closed the link.
+     */
+    private fun checkSilence(l: Link): Boolean {
+        synchronized(l) {
+            if (l.isClosed) return false
+            val silence = now() - l.lastRx
+            if (silence >= DEAD_AFTER_MS) {
+                // The measured silence can be far past the limit when Glass has just woken up.
+                BridgeLog.i("Nothing received for " + formatSeconds(silence) + "; closing the link")
+                return close(l, "nothing received for " + formatSeconds(DEAD_AFTER_MS))
+            }
+            if (silence >= PING_AFTER_MS && !l.pingSent) {
+                l.pingSent = true
+                // On its own thread: if a writer is stuck on a full socket, the ping
+                // waits for it, but the watchdog keeps counting towards DEAD_AFTER_MS.
+                Thread({ writeOn(l, Msg.ping(), null, 0) }, "GlassBridge-ping")
+                    .apply { isDaemon = true }
+                    .start()
+            }
+            return false
+        }
     }
 
     private fun writeOn(l: Link, obj: JSONObject, payload: ByteArray?, length: Int): Boolean {
@@ -416,8 +457,9 @@ class BridgeConnection(
         }
     }
 
-    private fun close(l: Link, why: String) {
-        if (!l.reason.compareAndSet(null, why)) return
+    /** Closes [l] with [why] as its reason; false if it was already closed. */
+    private fun close(l: Link, why: String): Boolean {
+        if (!l.reason.compareAndSet(null, why)) return false
         val s = l.socket
         try {
             s.shutdownInput()
@@ -428,6 +470,7 @@ class BridgeConnection(
         } catch (e: Exception) {
         }
         closeQuietly(s)
+        return true
     }
 
     private fun pause(ms: Long) {

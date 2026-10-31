@@ -224,6 +224,22 @@ object MediaRules {
     const val PREFS = "media_sync"
     const val KEY_SYNCED_IDS = "synced_ids"
 
+    /**
+     * True when this `welcome` should make MediaSync forget its synced ids ([SyncedRecord.forgetAll]):
+     * it carries `pair_token`, so Glass has just paired, perhaps with a different phone (say
+     * fake_phone on a Mac first, then the iPhone), and that phone should get the whole
+     * DCIM/Camera backlog. A plain welcome (the stored token accepted) keeps the record, as does
+     * a `pair_token` equal to [storedToken] (a repeat of the pairing Glass already has).
+     */
+    @JvmStatic
+    fun forgetSyncedOn(welcome: Welcome, storedToken: String?): Boolean =
+        welcome.isNewPairing && welcome.pairToken != storedToken
+
+    /** The log line for [forgetSyncedOn]: [n] ids were forgotten. */
+    @JvmStatic
+    fun forgetSyncedMessage(n: Int): String =
+        "New pairing: forgetting $n synced media ids so this phone gets the backlog"
+
     /** True if a file should be uploaded: not a dotfile, not empty, a known type, and quiet for [QUIET_MS]. */
     @JvmStatic
     fun isCandidate(name: String, size: Long, lastModified: Long, now: Long): Boolean =
@@ -296,5 +312,71 @@ object MediaRules {
             if (best == null || wait < best) best = wait
         }
         return best
+    }
+}
+
+/**
+ * The synced media ids (`<name>:<size>`, [Uploader.idFor]) that MediaSync keeps in
+ * SharedPreferences [MediaRules.PREFS] / [MediaRules.KEY_SYNCED_IDS], behind a tiny [Store] so
+ * these rules can run on the JVM.
+ *
+ * - A scan takes a [snapshot] when it starts and records each upload with [markSynced].
+ * - [forgetAll] (a new pairing, [MediaRules.forgetSyncedOn]) empties the record and starts a
+ *   new generation. [markSynced] with a snapshot taken before that is refused, so a scan from
+ *   the previous session that is still finishing can't write the old ids back.
+ *
+ * Thread-safe; [Store] calls happen under one lock.
+ */
+class SyncedRecord(private val store: Store) {
+
+    interface Store {
+        /** The stored ids, or null for none. Read only: the caller copies it. */
+        fun load(): Set<String>?
+
+        /** Replaces the stored ids. [ids] isn't changed afterwards. */
+        fun save(ids: Set<String>)
+
+        /** Deletes the stored ids, on disk before it returns. */
+        fun clear()
+    }
+
+    /** The ids recorded when a scan started, and the record's generation then. */
+    class Snapshot(val ids: Set<String>, val generation: Int)
+
+    private val lock = Any()
+    private var generation = 0 // guarded by lock
+
+    fun snapshot(): Snapshot {
+        synchronized(lock) {
+            return Snapshot(HashSet(store.load() ?: emptySet()), generation)
+        }
+    }
+
+    /** False once [forgetAll] has run after [snap] was taken. */
+    fun isCurrent(snap: Snapshot): Boolean {
+        synchronized(lock) {
+            return snap.generation == generation
+        }
+    }
+
+    /** Records [id] as synced; false (nothing written) if the record was forgotten after [snap]. */
+    fun markSynced(snap: Snapshot, id: String): Boolean {
+        synchronized(lock) {
+            if (snap.generation != generation) return false
+            val ids = HashSet(store.load() ?: emptySet())
+            ids.add(id)
+            store.save(ids)
+            return true
+        }
+    }
+
+    /** Forgets every synced id; returns how many there were. */
+    fun forgetAll(): Int {
+        synchronized(lock) {
+            generation++
+            val n = store.load()?.size ?: 0
+            store.clear()
+            return n
+        }
     }
 }

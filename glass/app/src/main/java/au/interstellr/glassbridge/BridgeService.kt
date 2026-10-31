@@ -30,6 +30,7 @@ import au.interstellr.glassbridge.core.Endpoint
 import au.interstellr.glassbridge.core.Frame
 import au.interstellr.glassbridge.core.GlassHandler
 import au.interstellr.glassbridge.core.LocationFix
+import au.interstellr.glassbridge.core.MediaRules
 import au.interstellr.glassbridge.core.MessageRouter
 import au.interstellr.glassbridge.core.Msg
 import au.interstellr.glassbridge.core.NavSpeech
@@ -58,6 +59,11 @@ import java.util.concurrent.RejectedExecutionException
  *   reconnect backoff all stop while an unplugged Glass is in deep sleep. Each tick holds a
  *   short PARTIAL_WAKE_LOCK so the status write (or the redial) finishes before Glass sleeps
  *   again.
+ * - The link's silence is measured on elapsedRealtime (it counts deep sleep), and each tick
+ *   runs the silence check itself, so a link that died while Glass slept is closed, and
+ *   redialled, at the first tick after 30 s of silence instead of minutes later.
+ * - A new pairing (`welcome` with `pair_token`) makes MediaSync forget its synced ids, so the
+ *   newly paired phone gets the whole DCIM/Camera backlog.
  * - TTS with QUEUE_ADD (dropped until TTS is ready), a ToneGenerator TONE_PROP_ACK chime for
  *   150 ms, and a 6 s SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP that also brings the card
  *   screen to the front if it isn't there (wake cards and new nav steps).
@@ -129,6 +135,9 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     private var lastNotificationText: String? = null
     private var receiversRegistered = false
 
+    /** Link thread only: the current (or just ended) link got `welcome`. */
+    private var sessionAccepted = false
+
     /** Fallback for the tick if the alarm can't be set (it doesn't fire during deep sleep). */
     private val statusTick = Runnable { onTick() }
 
@@ -180,6 +189,9 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
         lastNotificationText = GlassState.link.notificationText
         GlassState.addListener(this)
 
+        // Before the link starts: silence is then measured on a clock that keeps counting while
+        // Glass is in deep sleep (System.nanoTime, the default, stops).
+        BridgeConnection.clockMs = { SystemClock.elapsedRealtime() }
         connection = BridgeConnection(
             resolve = {
                 val ep = discovery.resolve()
@@ -282,6 +294,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
     override fun onConnecting() {
         // GlassState is updated when resolve() returns (see onCreate).
+        sessionAccepted = false
     }
 
     override fun onConnected(endpoint: Endpoint) {
@@ -302,6 +315,10 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     }
 
     override fun onRetryWait(ms: Long) {
+        // After an accepted link drops, keep the tick's wake lock (it times out by itself): the
+        // tick that found the link dead is redialling now (retryNow skips this wait), and
+        // releasing would freeze that redial until the next tick.
+        if (sessionAccepted) return
         // The redial a tick started is over (it failed); the CPU may sleep until the next tick.
         main.post { releaseTickWakeLock() }
     }
@@ -310,6 +327,14 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
     @SuppressLint("ApplySharedPref")
     override fun onWelcome(welcome: Welcome) {
+        sessionAccepted = true
+        if (MediaRules.forgetSyncedOn(welcome, prefs.getString(Pairing.KEY_TOKEN, null))) {
+            // Perhaps a different phone (fake_phone first, then the iPhone): it should get the
+            // whole backlog. Here, on the link thread, so it's done before this session's `sync`
+            // (routed next on this thread) can start a scan; and before the token is saved, so a
+            // crash in between means pairing (and forgetting) again, not a lost backlog.
+            BridgeLog.i(MediaRules.forgetSyncedMessage(mediaSync.forgetSynced()))
+        }
         if (welcome.isNewPairing) {
             // commit(), on the link thread, on purpose: the new token must be on disk before
             // anything else happens, or a crash now would leave Glass needing to pair again.
@@ -436,6 +461,10 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
      */
     private fun onTick() {
         scheduleTick()
+        // The watchdog thread's sleep stops while Glass is suspended, so check the silence here,
+        // inside this wake: a link that died while Glass slept (>= 30 s of silence on
+        // elapsedRealtime) is closed now, and this same tick redials.
+        connection.checkSilence()
         val connected = connection.isConnected
         try {
             tickWakeLock?.acquire(if (connected) TICK_WAKE_LINKED_MS else TICK_WAKE_REDIAL_MS)

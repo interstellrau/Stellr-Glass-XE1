@@ -2,6 +2,7 @@
 
 package au.interstellr.glassbridge
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Environment
@@ -9,6 +10,7 @@ import android.os.FileObserver
 import android.os.PowerManager
 import au.interstellr.glassbridge.core.BridgeLog
 import au.interstellr.glassbridge.core.MediaRules
+import au.interstellr.glassbridge.core.SyncedRecord
 import au.interstellr.glassbridge.core.Uploader
 import java.io.File
 import java.util.concurrent.Executors
@@ -25,8 +27,11 @@ import java.util.concurrent.TimeUnit
  *   unknown types and files modified in the last 3 s are skipped ([MediaRules]). A file still
  *   inside that 3 s window gets a re-scan when it leaves it.
  * - A file counts as synced only on `file_ack ok:true`; synced `<name>:<size>` ids live in
- *   SharedPreferences `media_sync` / `synced_ids`. A file the iPhone refuses (`ok:false`) or
- *   doesn't ack within 60 s is retried next session (PROTOCOL.md section 5), not in this one.
+ *   SharedPreferences `media_sync` / `synced_ids` ([SyncedRecord]). A file the iPhone refuses
+ *   (`ok:false`) or doesn't ack within 60 s is retried next session (PROTOCOL.md section 5),
+ *   not in this one.
+ * - A new pairing ([forgetSynced]) forgets the synced ids, so a phone paired after another one
+ *   (fake_phone, then the iPhone) gets the whole backlog.
  * - A partial wake lock is held while a scan uploads, so an upload that starts with the screen
  *   on (or from the 60 s alarm) isn't frozen half way when Glass goes to sleep.
  * - Nothing uploads until `sync {enabled:true}`. When the link drops, BridgeService calls
@@ -51,6 +56,19 @@ class MediaSync(context: Context, private val uploader: Uploader) {
     }
     private val lock = Any()
     private var pendingScan: ScheduledFuture<*>? = null // guarded by lock
+    private val record = SyncedRecord(object : SyncedRecord.Store {
+        override fun load(): Set<String>? = prefs.getStringSet(MediaRules.KEY_SYNCED_IDS, null)
+
+        override fun save(ids: Set<String>) {
+            prefs.edit().putStringSet(MediaRules.KEY_SYNCED_IDS, ids).apply()
+        }
+
+        // commit(): the reset must be on disk before BridgeService saves the new token.
+        @SuppressLint("ApplySharedPref")
+        override fun clear() {
+            prefs.edit().remove(MediaRules.KEY_SYNCED_IDS).commit()
+        }
+    })
 
     /** Held in a field on purpose: see the class docs. Guarded by [lock]. */
     private var observer: FileObserver? = null
@@ -99,6 +117,19 @@ class MediaSync(context: Context, private val uploader: Uploader) {
         if (enabled) schedule(0L)
     }
 
+    /**
+     * Forgets every synced id so the phone Glass has just paired with gets the whole backlog
+     * (BridgeService, on a `welcome` with a new `pair_token`, on the link thread before that
+     * session's `sync` arrives). Returns how many were forgotten; the reset is on disk when this
+     * returns. A scan from the previous session that is still finishing can't write the old ids
+     * back ([SyncedRecord]); it stops, and the next scan starts from the empty record.
+     */
+    fun forgetSynced(): Int {
+        val n = record.forgetAll()
+        rescan()
+        return n
+    }
+
     /** Main thread (start) or link thread (sync): hence the lock. */
     private fun startObserver() {
         synchronized(lock) { startObserverLocked() }
@@ -142,22 +173,24 @@ class MediaSync(context: Context, private val uploader: Uploader) {
         synchronized(lock) { pendingScan = null }
         if (!enabled) return
         val files = dir.listFiles()?.toList() ?: emptyList()
-        // Copy: the set SharedPreferences returns must not be modified.
-        val synced = HashSet(prefs.getStringSet(MediaRules.KEY_SYNCED_IDS, emptySet()) ?: emptySet())
-        val skip = HashSet(synced)
+        val snap = record.snapshot() // a copy, with the record's generation
+        val skip = HashSet(snap.ids)
         synchronized(lock) { skip.addAll(refusedThisSession) }
         val todo = MediaRules.pending(files, skip, System.currentTimeMillis())
         if (todo.isNotEmpty()) BridgeLog.i("Media sync: ${todo.size} file(s) to upload")
         try {
             for (f in todo) {
-                if (!enabled) return
+                // Sync off (the link dropped), or a new pairing forgot the ids this scan started from.
+                if (!enabled || !record.isCurrent(snap)) return
                 holdWakeLock()
                 val r = uploader.upload(f)
                 when (MediaRules.next(r)) {
                     MediaRules.Next.SYNCED -> {
-                        synced.add(r.id)
                         skip.add(r.id)
-                        prefs.edit().putStringSet(MediaRules.KEY_SYNCED_IDS, HashSet(synced)).apply()
+                        if (!record.markSynced(snap, r.id)) {
+                            BridgeLog.i("Synced ${r.id} to the previous phone; not recorded (new pairing)")
+                            return
+                        }
                         BridgeLog.i("Synced ${r.id}")
                     }
                     MediaRules.Next.NEXT_SESSION -> {
@@ -178,7 +211,7 @@ class MediaSync(context: Context, private val uploader: Uploader) {
         } finally {
             releaseWakeLock()
         }
-        if (!enabled) return
+        if (!enabled || !record.isCurrent(snap)) return
         val again = MediaRules.nextCheckDelayMs(dir.listFiles()?.toList() ?: emptyList(), skip, System.currentTimeMillis())
         if (again != null) schedule(again + 250L)
     }

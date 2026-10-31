@@ -385,6 +385,93 @@ class CoreLogicTest {
         assertEquals(listOf(older.name, newer.name), pending.map { it.name })
     }
 
+    @Test
+    fun aNewPairingForgetsTheSyncedMediaAPlainWelcomeDoesNot() {
+        val oldToken = "00000000000000000000000000000000"
+        val newToken = "0123456789abcdef0123456789abcdef"
+        val paired = Welcome.from(j("{\"type\":\"welcome\",\"phone_name\":\"iPhone\",\"pair_token\":\"$newToken\",\"pair_code\":\"0042\"}"))
+        val plain = Welcome.from(j("{\"type\":\"welcome\",\"server\":\"fake_phone\",\"version\":2,\"phone_name\":\"fake_phone\"}"))
+        // fake_phone on the Mac first (its token stored), then the iPhone pairs: forget.
+        assertTrue(MediaRules.forgetSyncedOn(paired, oldToken))
+        assertTrue(MediaRules.forgetSyncedOn(paired, null)) // the first pairing ever
+        // The stored token accepted: keep the record.
+        assertFalse(MediaRules.forgetSyncedOn(plain, oldToken))
+        assertFalse(MediaRules.forgetSyncedOn(plain, null))
+        // The same pairing repeated: keep the record.
+        assertFalse(MediaRules.forgetSyncedOn(paired, newToken))
+        // A blank pair_token isn't a pairing (Welcome.from drops it).
+        assertFalse(MediaRules.forgetSyncedOn(Welcome.from(j("{\"type\":\"welcome\",\"pair_token\":\" \"}")), oldToken))
+        assertEquals("New pairing: forgetting 3 synced media ids so this phone gets the backlog", MediaRules.forgetSyncedMessage(3))
+    }
+
+    /** SyncedRecord's store, in memory, counting writes like SharedPreferences would see them. */
+    private class MemStore : SyncedRecord.Store {
+        var ids: Set<String>? = null
+        var saves = 0
+        var clears = 0
+        override fun load(): Set<String>? = ids
+        override fun save(ids: Set<String>) { this.ids = ids; saves++ }
+        override fun clear() { ids = null; clears++ }
+    }
+
+    @Test
+    fun syncedRecordForgetAllAndAStaleScanCantWriteTheOldIdsBack() {
+        val store = MemStore()
+        val record = SyncedRecord(store)
+        val first = record.snapshot()
+        assertTrue(first.ids.isEmpty())
+        assertTrue(record.markSynced(first, "a.jpg:10"))
+        assertTrue(record.markSynced(first, "b.jpg:20"))
+        assertEquals(setOf("a.jpg:10", "b.jpg:20"), store.ids)
+        assertTrue(record.isCurrent(first))
+
+        // The previous session's scan is still finishing when the new pairing arrives.
+        val stale = record.snapshot()
+        assertEquals(setOf("a.jpg:10", "b.jpg:20"), stale.ids)
+        assertEquals(2, record.forgetAll())
+        assertNull(store.ids)
+        assertEquals(1, store.clears)
+        assertFalse(record.isCurrent(stale))
+        val savesBefore = store.saves
+        assertFalse("a stale scan wrote to the reset record", record.markSynced(stale, "c.jpg:30"))
+        assertEquals(savesBefore, store.saves)
+        assertNull(store.ids)
+
+        // The new phone's scan starts from nothing: the whole backlog is pending again.
+        val fresh = record.snapshot()
+        assertTrue(fresh.ids.isEmpty())
+        assertTrue(record.isCurrent(fresh))
+        assertTrue(record.markSynced(fresh, "a.jpg:10"))
+        assertEquals(setOf("a.jpg:10"), store.ids)
+        // Snapshots are copies: later writes don't change them.
+        assertTrue(fresh.ids.isEmpty())
+        assertEquals(1, record.forgetAll())
+        assertEquals(0, record.forgetAll())
+    }
+
+    @Test
+    fun forgetAllRacingAScanNeverLeavesOldIdsBehind() {
+        // A scan thread recording uploads while a new pairing forgets the record: whatever the
+        // interleaving, nothing recorded from before forgetAll() survives it.
+        repeat(200) {
+            val store = MemStore()
+            store.ids = setOf("old1:1", "old2:2")
+            val record = SyncedRecord(store)
+            val snap = record.snapshot()
+            val start = java.util.concurrent.CountDownLatch(1)
+            val scan = Thread {
+                start.await()
+                for (i in 0 until 50) if (!record.markSynced(snap, "f$i:1")) break
+            }
+            scan.start()
+            start.countDown()
+            record.forgetAll()
+            scan.join(5000)
+            val left = store.ids ?: emptySet()
+            assertTrue("old ids survived a reset: $left", left.isEmpty())
+        }
+    }
+
     // ----- Json accessors ----------------------------------------------------------------
 
     @Test
