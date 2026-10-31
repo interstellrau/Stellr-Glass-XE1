@@ -33,3 +33,7 @@ __pycache__/
 received/
 tools/received/
 fake_glass_token.txt
+
+# glass_adb.py screenshots
+/screens/
+tools/screens/

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The package name comes from Gradle (namespace au.interstellr.glassbridge).
+     Permissions and components follow the brief's "Manifest and install" section. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Network and Wi-Fi -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Power and startup -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Storage (DCIM/Camera for media sync) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!-- Location: the phone's GPS goes in as the mock gps provider. Lint flags
+         ACCESS_MOCK_LOCATION in a main manifest; that's deliberate (GlassBridge only ships
+         as a debug build). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="GlassBridge"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+
+        <!-- Landscape only: Glass's 640x360 display never rotates. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            tools:ignore="DiscouragedApi">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The brief says "not exported", but its own setup step (and tools/glass_adb.py start)
+             is `adb shell am startservice -n au.interstellr.glassbridge/.BridgeService`, and
+             Android refuses a non-exported service to the adb shell user on a stock (non-root)
+             build. So: exported, but only to callers holding DUMP. The adb shell user holds DUMP
+             on every build (it's what lets `adb shell dumpsys` work); ordinary apps can't get
+             it; GlassBridge itself (MainActivity, BootReceiver) is always allowed. -->
+        <service
+            android:name=".BridgeService"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

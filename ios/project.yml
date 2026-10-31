@@ -1,0 +1,77 @@
+# XcodeGen spec for the GlassBridge iPhone app.
+#
+#   brew install xcodegen
+#   cd ios && xcodegen && open GlassBridge.xcodeproj
+#
+# Then pick your Team under Signing & Capabilities and run on an iPhone (iOS 17+).
+# GlassBridge.xcodeproj and GlassBridge/Info.plist are generated: don't edit or commit them.
+name: GlassBridge
+
+options:
+  bundleIdPrefix: au.interstellr
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+targets:
+  GlassBridge:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GlassBridge
+    info:
+      path: GlassBridge/Info.plist
+      properties:
+        CFBundleDisplayName: GlassBridge
+        # XcodeGen writes 1.0 / 1 unless the version settings are mapped explicitly.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Without the location mode, allowsBackgroundLocationUpdates = true crashes.
+        UIBackgroundModes:
+          - location
+        NSBonjourServices:
+            - "_glassbridge._tcp"
+        NSLocalNetworkUsageDescription: "GlassBridge talks to your Google Glass over Wi-Fi or your Personal Hotspot."
+        NSLocationWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
+        NSPhotoLibraryAddUsageDescription: "Photos and videos you take on Glass are saved to your library."
+    settings:
+      base:
+        PRODUCT_NAME: GlassBridge
+        PRODUCT_BUNDLE_IDENTIFIER: au.interstellr.glassbridge.ios
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: "NO"
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+schemes:
+  GlassBridge:
+    build:
+      targets:
+        GlassBridge: all
+    run:
+      config: Debug
+    archive:
+      config: Release
