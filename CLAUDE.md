@@ -69,12 +69,75 @@ Update this when anything is run on real hardware.
 
 ### Verified
 
-_(filled in by the build)_
+All in the cloud sandbox (Linux, JDK 21, Android SDK 35, Swift 6.1.2), with no Glass, iPhone or
+Mac, on 1 November 2026.
+
+| Check | How | Result |
+|---|---|---|
+| Python stand-ins, framing, pairing, end to end | `python3 tools/test_e2e.py` | 28/28 pass on Python 3.13 and 3.9; byte-identical upload; every §6 pairing branch |
+| Glass JVM tests | `./gradlew testDebugUnitTest` with `fake_phone.py --selftest` on 9191 | 80 tests, 0 failures; LiveLinkTest ran (6) incl. a 600 KB upload with matching SHA-256 |
+| Glass APK builds | `./gradlew assembleDebug` (AGP 8.8.0, Kotlin 1.9.22, Gradle 8.10.2) | Pass. `dist/GlassBridge-debug.apk`: minSdk 19, targetSdk 19, versionCode 2 / 2.0 |
+| No APIs above 19 | `./gradlew lintDebug`, plus dexdump of the APK against `api-versions.xml` | 0 NewApi; no app call above API 19. Remaining lint errors are deliberate: ExpiredTargetSdkVersion, MockLocation, ProtectedPermissions, WrongConstant ×2 (Criteria) |
+| APK signing | `apksigner verify --print-certs` | Signed with `glass/debug.keystore` (SHA-256 f3b974dd…99b6) |
+| iPhone Core vs Python | `tools/swift-check/run.sh` | All four parts pass: stream parse at every read size, re-encode verified by Python, NavTracker synthetic routes, classify / Wi-Fi QR / pairing / limits |
+| iPhone app syntax | `swiftc -parse` on every file | Pass (syntax only) |
+| iPhone app types | `ios/LinuxCheck/run.sh`: type-check against hand-written framework stand-ins that model the SDK's main-actor isolation | No errors; only the 2 expected `placemark` deprecations. Stand-ins are approximations, so this is not a compile. |
+| iPhone server logic | `ios/LinuxCheck` simulation: real GlassServer, GlassLink, MediaReceiver, NavigationService against a fake network | 96 checks pass |
+| Independent review | 4 iPhone reviewers (SwiftUI, actor isolation, API signatures checked against Apple's documentation JSON, behaviour), 3 Glass reviewers (Dalvik runtime, spec/UI/input, link interop), 2 tools reviewers (macOS use, stand-in parity) | No iPhone compile issues found. 4 iPhone, 5 Glass and 6 tools behaviour issues found and fixed; 1 Glass finding rejected as already covered |
 
 ### Not verified
 
-_(filled in by the build)_
+- **Anything on real hardware.** Nothing has run on Glass, on an iPhone, or on a Mac.
+- **The iPhone app has never been compiled by Xcode.** The first Xcode 26 build is open
+  question 1. XcodeGen, actool and AppIntents metadata extraction have never run.
+- **The Glass APK has never run on Android** (no emulator here): UI layout on the prism, Canvas
+  arrows, input events, TTS and chime, wake locks and the wake alarm in deep sleep, mock GPS,
+  FileObserver on DCIM, NsdManager, Wi-Fi provisioning, and `am startservice` against the
+  DUMP-guarded export.
+- **Interop between the real apps.** Each was tested only against a Python stand-in, and the
+  iPhone side only against a fake network.
+- **The tools on macOS.** Only run on Linux; `glass_adb.py` only against a stub adb; the
+  `view.html` live views only in headless Chrome, not Safari.
+
+### Decisions made during the build
+
+Judgement calls beyond the brief and the owner decisions. Revisit them if hardware disagrees.
+
+- `BridgeService` is exported with `android:permission="android.permission.DUMP"` (not
+  `exported="false"`), because adb shell can't start a non-exported service on a non-root
+  build, and the brief's install steps use `am startservice`. Apps can't hold DUMP.
+- Glass's 60 s tick (status, media rescan, redial, link silence check) runs from an exact
+  `ELAPSED_REALTIME_WAKEUP` alarm with a short partial wake lock; uploads hold their own wake
+  lock. The link watchdog measures silence on `elapsedRealtime`, which keeps running in deep
+  sleep.
+- Glass forgets its synced-media record when it pairs with a new phone, so the newly paired
+  phone gets the backlog.
+- After accepting a Glass, the iPhone sends `nav_end` when no guidance is active
+  (`PROTOCOL.md` §4).
+- The iPhone stores the pairing token in `UserDefaults` (`pairToken`), not the Keychain.
+  Forget Glass deletes it and drops the current session.
+- A tap on a notification-style card sends `ack tapped`, then `ack dismissed`.
+- A file whose `file_ack` times out waits for the next session; an ack that arrives before
+  `file_end` is ignored.
+- The iPhone Core has its own strict JSON parser (`GBJSON.swift`), because
+  `JSONSerialization` can't tell `true` from `1`.
+- `fake_phone.py` has sync on by default like the iPhone; `--no-sync` starts with it off.
 
 ## Open questions for real hardware
 
 See the table in `TESTING.md`. Record answers here as they're settled.
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Does the full iPhone app compile? | |
+| 2 | Does `NWListener` accept Personal Hotspot clients, and does the Local Network prompt appear? | |
+| 3 | Does the background keep-alive work? | |
+| 4 | Which way is a swipe? | |
+| 5 | Does a tap arrive as `KEYCODE_DPAD_CENTER`? | |
+| 6 | Does `NsdManager` Bonjour discovery work on KitKat? | |
+| 7 | Does XE24's Settings › Wi-Fi still offer the QR scanner? | |
+| 8 | Do mock GPS fixes work? | |
+| 9 | Does Photos add-only saving work, including videos? | |
+| 10 | Does the Shortcuts intent run with the app in the background? | |
+| 11 | What phone name does Glass show? | |
+| 12 | Is `MKRoute.step.instructions` English? | |
