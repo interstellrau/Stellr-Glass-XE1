@@ -1,0 +1,35 @@
+# macOS / editors
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Gradle / Android (glass/)
+.gradle/
+build/
+local.properties
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Xcode / XcodeGen (ios/) — project and Info.plist are generated
+ios/GlassBridge.xcodeproj/
+ios/GlassBridge/Info.plist
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+# SwiftPM (tools/swift-check)
+.build/
+.swiftpm/
+tools/swift-check/Sources/gbcheck/Core/
+
+# Python
+__pycache__/
+*.pyc
+
+# Stand-in outputs
+received/
+tools/received/
+fake_glass_token.txt
