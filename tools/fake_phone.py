@@ -21,9 +21,11 @@ Behaviour (normal mode):
     carried a token and a token is stored, otherwise pairing_required), then close.
     Before acceptance only hello and ping are handled (ping -> pong); payloads are
     still consumed. --no-auth accepts every hello.
-  * After accepting: welcome, sync (on by default, like the iPhone app), screencast
-    if on, queued cards (kept 10 minutes while no Glass is connected), then the
-    current nav card (not announced).
+  * After accepting: welcome, sync (on by default, like the iPhone app; --no-sync or
+    'sync off' before Glass connects keeps it off), screencast if on, queued cards
+    (kept 10 minutes while no Glass is connected), then the current nav card (not
+    announced). With sync on, a real Glass uploads its whole DCIM/Camera backlog here
+    and marks each file synced on Glass for good, so those files never reach the iPhone.
   * Heartbeat: ping after 15 s of silence, drop at 30 s. ping is always answered.
   * Uploads follow the iPhone's MediaReceiver rules: a chunk whose offset isn't the
     number of bytes received so far fails the transfer ("chunks out of order"); at
@@ -34,7 +36,8 @@ Behaviour (normal mode):
     allowed by the protocol.
   * Screencast frames are saved to ./received/frames/frame-NNNNNN.jpg (the newest
     --keep-frames are kept) and ./received/frames/latest.jpg. Open
-    ./received/frames/view.html in a browser for a live view.
+    ./received/frames/view.html (written at start) in a browser for a live view.
+  * nav sends distance_m and remaining_m as JSON fractions (120.0), as the iPhone does.
   * Every frame sent or received is printed ("->" sent, "<-" received).
 
 Console commands:
@@ -107,6 +110,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import shlex
@@ -343,8 +347,8 @@ class FrameSaver(object):
         self.n = 0
         self.saved = []
 
-    def save(self, payload):
-        self.n += 1
+    def ensure_view(self):
+        """Create the frames folder and view.html (once). Returns view.html's path, or None."""
         if not self.dir:
             return None
         os.makedirs(self.dir, exist_ok=True)
@@ -352,6 +356,13 @@ class FrameSaver(object):
         if not os.path.exists(view):
             with open(view, "w") as f:
                 f.write(VIEW_HTML)
+        return view
+
+    def save(self, payload):
+        self.n += 1
+        if not self.dir:
+            return None
+        self.ensure_view()
         path = os.path.join(self.dir, "frame-%06d.jpg" % self.n)
         with open(path, "wb") as f:
             f.write(payload)
@@ -872,9 +883,11 @@ def run_command(server, line):
                 log("usage: nav <maneuver> <metres> <instruction...>")
                 return True
             maneuver = parts[0].lower()
+            # A float, like the iPhone (Swift Double): 120 goes out as "distance_m":120.0.
             metres = float(parts[1])
-            if metres == int(metres):
-                metres = int(metres)
+            if not math.isfinite(metres) or metres < 0:
+                log("nav: metres must be a number, 0 or more")
+                return True
             instruction = parts[2] if len(parts) > 2 else maneuver.replace("_", " ").capitalize()
             if maneuver not in MANEUVERS:
                 log("note: %r is not a known maneuver; Glass should show it as straight" % maneuver)
@@ -1000,6 +1013,10 @@ def main(argv=None):
                         help="non-interactive scripted mode for the Kotlin LiveLinkTest")
     parser.add_argument("--no-auth", action="store_true", help="disable pairing: accept every hello")
     parser.add_argument("--name", default="fake_phone", help="phone_name sent in welcome")
+    parser.add_argument("--no-sync", action="store_true",
+                        help="start with photo sync off (default on, like the iPhone app; Glass "
+                             "then uploads its DCIM backlog here and marks it synced). "
+                             "Not allowed with --selftest")
     parser.add_argument("--received-dir", default=None,
                         help="where uploads and frames go (default ./received; "
                              "with --selftest nothing is written unless this is given)")
@@ -1016,6 +1033,8 @@ def main(argv=None):
     parser.add_argument("--pair-window", type=float, default=120.0, metavar="S",
                         help="testing: pairing window length in s (default 120)")
     args = parser.parse_args(argv)
+    if args.no_sync and args.selftest:
+        parser.error("--no-sync can't be used with --selftest (its script sends sync {enabled:true})")
 
     try:
         sys.stdout.reconfigure(errors="replace", line_buffering=True)
@@ -1030,6 +1049,7 @@ def main(argv=None):
                          keep_frames=args.keep_frames, ping_after=args.ping_after,
                          dead_after=args.dead_after, hello_timeout=args.hello_timeout,
                          pair_window=args.pair_window, quiet_frames=args.quiet_frames)
+    server.sync_enabled = not args.no_sync
     try:
         server.start()
     except OSError as e:
@@ -1052,8 +1072,22 @@ def main(argv=None):
             log("This machine: %s. On Glass: python3 tools/glass_adb.py config %s %d"
                 % (ip, ip, server.port))
         if received:
-            log("Uploads go to %s/, screencast frames to %s/frames/ (open view.html there)"
-                % (os.path.abspath(received), os.path.abspath(received)))
+            log("Uploads go to %s/" % os.path.abspath(received))
+            try:
+                view = server.frames.ensure_view()
+            except OSError as e:
+                view = None
+                log("Can't create %s: %s" % (os.path.join(received, "frames"), e))
+            if view:
+                log("Live screencast view: open %s   (shows frames once 'cast on' is sent and the "
+                    "Glass card screen is in front)" % shlex.quote(os.path.abspath(view)))
+        if server.sync_enabled:
+            log("Photo sync is ON (like the iPhone app). On connect, Glass uploads every photo and "
+                "video in its DCIM/Camera not yet synced, oldest first, and marks each one synced "
+                "on Glass for good: those files will NOT be sent to the iPhone later. To avoid "
+                "that, type 'sync off' before Glass connects, or restart with --no-sync.")
+        else:
+            log("Photo sync is off (--no-sync). Type 'sync on' to receive Glass photos and videos.")
         log("Type 'help' for commands.")
         interactive = sys.stdin.isatty()
         while True:

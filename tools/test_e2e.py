@@ -18,9 +18,10 @@ What it covers:
   SessionTests       fake_glass.py against fake_phone.py: pairing, status, an upload of
                      700,000 random bytes arriving byte-identical in received/, a duplicate
                      re-upload acked ok and discarded, cards + acks, notify, dismiss, speak, nav,
-                     navend, loc, wifi, status/request_status, ping, cast on/off with frames
-                     saved byte-identical, sync off/on, name, queued cards; MediaReceiver
-                     errors ("chunks out of order", "size mismatch", "unknown transfer").
+                     navend, loc, wifi (ok and Glass's refusals), status/request_status, ping,
+                     cast on/off with frames saved byte-identical, sync off/on, name, queued
+                     cards; view.html written at start, --no-sync; MediaReceiver errors
+                     ("chunks out of order", "size mismatch", "unknown transfer").
   PairingTests       PROTOCOL.md section 6: pair inside the window and save the token; reconnect
                      with it; rejected pairing_required / bad_token; unauthenticated and silent
                      connections don't disturb the accepted session; hello timeout; a newer
@@ -33,7 +34,8 @@ What it covers:
                      drops, reconnects 2 s after a session, 5 s after 'rejected', and backs off
                      2, 4, 8 s when the phone is unreachable.
   GlassAdbTests      glass_adb.py against a stub adb: config read-modify-write, config-clear,
-                     invert-swipe, wifi.json, install advice, screen, status.
+                     invert-swipe, wifi.json, install advice, screen (and the --watch --open
+                     live view), status.
   HelpTests          every script's --help.
 """
 
@@ -44,6 +46,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -174,6 +177,11 @@ def start_phone(cwd, *extra):
     phone = Proc([FAKE_PHONE, "--port", str(port)] + list(extra), cwd, "fake_phone")
     phone.wait_for(r"Listening on .*:%d" % port, timeout=10)
     return phone, port
+
+
+def received_files(cwd):
+    """Files in <cwd>/received/, sorted, without the frames/ folder fake_phone makes at start."""
+    return sorted(n for n in os.listdir(os.path.join(cwd, "received")) if n != "frames")
 
 
 def run_glass(cwd, port, *extra, **kw):
@@ -677,11 +685,17 @@ class SessionTests(ToolTestCase):
         phone.send("speak Turn left in 100 metres")
         glass.wait_for(r"SPEAK Turn left in 100 metres", since=g)
         phone.send("nav left 120 Turn left onto King William St")
-        glass.wait_for(r"NAV step 1/5 left 120 m: Turn left onto King William St \(announce\)", since=g)
+        glass.wait_for(r"NAV step 1/5 left 120\.0 m: Turn left onto King William St \(announce\)", since=g)
+        # Fractions on the wire, like the iPhone's Swift Double ("120.0", not "120").
+        phone.wait_for(r'"distance_m":120\.0,.*"remaining_m":120\.0', since=m)
         phone.send("nav left 40 Turn left onto King William St")
-        glass.wait_for(r"NAV step 1/5 left 40 m: Turn left onto King William St$", since=g)
+        glass.wait_for(r"NAV step 1/5 left 40\.0 m: Turn left onto King William St$", since=g)
         phone.send("nav arrive 0 You have arrived")
-        glass.wait_for(r"NAV step 2/5 arrive 0 m: You have arrived \(announce\)", since=g)
+        glass.wait_for(r"NAV step 2/5 arrive 0\.0 m: You have arrived \(announce\)", since=g)
+        m2 = phone.mark()
+        phone.send("nav left nan Bad distance")
+        phone.wait_for(r"nav: metres must be a number, 0 or more", since=m2)
+        self.assertFalse(phone.has(r"Bad distance", since=m2), "a NaN nav was sent")
         phone.send("navend")
         glass.wait_for(r"NAV ended", since=g)
         phone.send("loc -34.9285 138.6007")
@@ -689,6 +703,13 @@ class SessionTests(ToolTestCase):
         phone.send('wifi "Home Net" secret123')
         glass.wait_for(r"WIFI_ADD Home Net \(WPA\)", since=g)
         phone.wait_for(r"WIFI Home Net: ok", since=m)
+        # fake_glass applies real Glass's WifiNetwork.problem() checks.
+        phone.send("wifi Short abc")
+        phone.wait_for(r"WIFI Short: FAILED \(a WPA password must be 8 to 63 characters\)", since=m)
+        phone.send("wifi Weak '' WEP")
+        phone.wait_for(r"WIFI Weak: FAILED \(a WEP network needs a key\)", since=m)
+        phone.send("wifi Cafe")
+        phone.wait_for(r"WIFI Cafe: ok", since=m)
         m = phone.mark()
         phone.send("status")
         phone.wait_for(r"Link: Glass #\d+ .* connected", since=m)
@@ -734,6 +755,24 @@ class SessionTests(ToolTestCase):
         glass.wait_for(r"Disconnected", since=g)
         glass.stop()
 
+    def test_startup_view_and_sync_options(self):
+        phone, port = self.phone()
+        view = os.path.join(self.dir, "received", "frames", "view.html")
+        phone.wait_for(r"Live screencast view: open .*received/frames/view\.html")
+        phone.wait_for(r"Photo sync is ON .*--no-sync")
+        self.assertTrue(os.path.exists(view), "view.html should exist before any frame arrives")
+        with open(view) as f:
+            self.assertIn("latest.jpg?t=", f.read())
+        phone2, port2 = self.phone("--no-sync", "--no-auth")
+        phone2.wait_for(r"Photo sync is off \(--no-sync\)")
+        c = self.client(port2)
+        c.hello()
+        c.expect("welcome")
+        self.assertEqual(c.expect("sync").get("enabled"), False)
+        p = subprocess.run([PY, FAKE_PHONE, "--selftest", "--no-sync"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, env=CHILD_ENV, timeout=30)
+        self.assertEqual(p.returncode, 2, p.stdout.decode())
+
     def test_duplicate_reupload_is_acked_and_discarded(self):
         upload = os.path.join(self.dir, "VID_0001.mp4")
         data = os.urandom(300000)
@@ -746,7 +785,7 @@ class SessionTests(ToolTestCase):
             self.assertIn("Upload VID_0001.mp4:300000: ok", out)
             self.assertIn('"mime":"video/mp4"', out)
         phone.wait_for(r"duplicate of a saved file, discarded, acked ok")
-        files = sorted(os.listdir(os.path.join(self.dir, "received")))
+        files = received_files(self.dir)
         self.assertEqual(files, ["VID_0001.mp4"])
         # The id is remembered across restarts too (files already in received/).
         phone.stop()
@@ -754,7 +793,7 @@ class SessionTests(ToolTestCase):
         rc, out = run_glass(self.dir, port2, "--upload", upload, "--exit-after-upload", "--no-token")
         self.assertEqual(rc, 0, out)
         phone2.wait_for(r"duplicate of a saved file")
-        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "received"))), ["VID_0001.mp4"])
+        self.assertEqual(received_files(self.dir), ["VID_0001.mp4"])
 
     def test_media_receiver_errors(self):
         phone, port = self.phone("--no-auth")
@@ -789,7 +828,7 @@ class SessionTests(ToolTestCase):
         self.assertEqual(ack.get("received"), len(payload))
         with open(os.path.join(self.dir, "received", "c.jpg"), "rb") as f:
             self.assertEqual(f.read(), payload)
-        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "received"))), ["c.jpg"])
+        self.assertEqual(received_files(self.dir), ["c.jpg"])
         # An abandoned partial upload is deleted when the link drops.
         c.send({"type": "file_begin", "id": "d.jpg:100", "name": "d.jpg", "size": 100, "mime": "image/jpeg",
                 "taken": 1})
@@ -797,7 +836,7 @@ class SessionTests(ToolTestCase):
         self.assertTrue(c.alive())
         c.close()
         phone.wait_for(r"Upload d\.jpg:100 abandoned")
-        self.assertEqual(sorted(os.listdir(os.path.join(self.dir, "received"))), ["c.jpg"])
+        self.assertEqual(received_files(self.dir), ["c.jpg"])
 
 
 # =====================================================================================
@@ -1293,6 +1332,42 @@ class GlassAdbTests(ToolTestCase):
         self.assertIn("latest.png", shots)
         self.assertEqual(len(shots), 2)
         self.assertIn(["shell", "screencap -p /sdcard/gb_screen.png"], self.calls())
+
+        # screen --watch --open: view.html reloading latest.png is written and opened once.
+        bindir = os.path.join(self.dir, "bin")
+        os.makedirs(bindir)
+        opened = os.path.join(self.dir, "opened.txt")
+        for name in ("open", "xdg-open"):
+            opener = os.path.join(bindir, name)
+            with open(opener, "w") as f:
+                f.write("#!/bin/sh\necho \"$@\" >> '%s'\n" % opened)
+            os.chmod(opener, 0o755)
+        e = dict(CHILD_ENV, STUB_ADB_ROOT=self.root, STUB_ADB_LOG=self.log,
+                 PATH=bindir + os.pathsep + os.environ.get("PATH", ""))
+        watch = subprocess.Popen([PY, "-u", GLASS_ADB, "--adb", self.stub, "screen", "--watch", "0.2",
+                                  "--open", "--out", "live"], cwd=self.dir, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, env=e)
+        live = os.path.join(self.dir, "live")
+        try:
+            deadline = time.monotonic() + 20
+            while len([n for n in os.listdir(live) if n[0].isdigit()] if os.path.isdir(live) else []) < 3:
+                self.assertLess(time.monotonic(), deadline, "screen --watch made fewer than 3 shots")
+                time.sleep(0.1)
+            watch.send_signal(signal.SIGINT)
+            out = watch.communicate(timeout=10)[0].decode("utf-8", "replace")
+        finally:
+            if watch.poll() is None:
+                watch.kill()
+                watch.communicate(timeout=10)
+        self.assertEqual(watch.returncode, 0, out)
+        self.assertIn("Live view (reloads every second): open", out)
+        with open(os.path.join(live, "view.html")) as f:
+            self.assertIn("latest.png?t=", f.read())
+        with open(opened) as f:  # realpath: on macOS the temp dir is under /var -> /private/var
+            self.assertEqual([os.path.realpath(l) for l in f.read().split("\n") if l],
+                             [os.path.realpath(os.path.join(live, "view.html"))])
+        self.assertIn("latest.png", os.listdir(live))
+        self.assertNotIn(".latest.tmp", os.listdir(live))
 
         rc, out = self.adb("mock")
         self.assertEqual(rc, 0, out)

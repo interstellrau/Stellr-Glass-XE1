@@ -15,10 +15,18 @@ What it does:
     (--token-file), or --token, or none with --no-token. When welcome carries
     pair_token, the token file is replaced and it prints
     "Paired with <phone_name>, code <pair_code>".
-  * Prints every frame ("<-" received, "->" sent). Acks each card with 'shown'.
-    Sends status after welcome, every 60 s and on request_status. Answers wifi_add with
-    wifi_result ok:true and ping with pong. Heartbeat: ping after 15 s of silence,
-    disconnect after 30 s.
+  * Prints every frame ("<-" received, "->" sent). Acks each card with 'shown' as soon
+    as it arrives. Real Glass differs: it acks 'shown' only when the card is actually on
+    screen (once per card; nothing while the display is off, and only the displayed one
+    of a burst), and acks 'dismissed' (notification cards: 'tapped', then 'dismissed')
+    when the card is tapped. So a missing ack with real Glass is not a regression.
+  * Sends status after welcome, every 60 s and on request_status. Answers ping with pong.
+    Answers wifi_add with the wifi_result real Glass would send, using its checks: no
+    ssid -> "missing ssid"; WPA without a password -> "a WPA network needs a password";
+    a WPA password not 8-63 characters (64 hex digits is fine) -> "a WPA password must
+    be 8 to 63 characters"; WEP without a key -> "a WEP network needs a key"; else ok.
+    (Real Glass can still fail when saving: Wi-Fi off, addNetwork refused.)
+    Heartbeat: ping after 15 s of silence, disconnect after 30 s.
   * --upload FILE (repeatable): after sync {enabled:true}, uploads each file as
     file_begin {id:"<name>:<size>", name, size, mime, taken:<mtime ms>}, file_chunk
     frames of at most 256 KiB, file_end; then waits up to 60 s for file_ack and prints
@@ -62,6 +70,69 @@ def log(msg):
 def mime_for(path):
     ext = os.path.splitext(path)[1].lower()
     return MIME.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def _json_text(value):
+    """Glass's Json.text: a string, or a number written as text; otherwise None."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value == value and abs(value) < 1e15 and value == int(value):
+            return str(int(value))
+        return repr(value)
+    return None
+
+
+def _jlen(s):
+    """Length in UTF-16 code units, as Kotlin's String.length counts."""
+    return len(s.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _is_hex(s):
+    return all(c in "0123456789abcdefABCDEF" for c in s)
+
+
+def wifi_result(obj):
+    """The wifi_result real Glass sends for this wifi_add, short of the Android save step.
+
+    Mirrors glass core/WifiNetwork.kt (from, normalizeSecurity, problem) and
+    BridgeService.onWifiAdd. Glass can still fail later on the device itself (Wi-Fi off and
+    couldn't be turned on, addNetwork refused), which this can't predict.
+    """
+    ssid = _json_text(obj.get("ssid"))
+    reply = {"type": "wifi_result", "ssid": ssid or ""}
+    if not ssid:
+        reply.update(ok=False, error="missing ssid")
+        return reply
+    password = _json_text(obj.get("password")) or None
+    raw = obj.get("security")
+    s = raw.strip().upper() if isinstance(raw, str) else None
+    if s == "WEP":
+        security = "WEP"
+    elif s in ("OPEN", "NONE", "NOPASS", ""):
+        security = "OPEN"
+    elif s is not None and (s.startswith("WPA") or s == "PSK"):
+        security = "WPA"
+    else:  # none, or something unknown
+        security = "WPA" if password else "OPEN"
+    error = None
+    if security == "WPA":
+        if not password:
+            error = "a WPA network needs a password"
+        elif _jlen(password) == 64 and _is_hex(password):
+            error = None
+        elif _jlen(password) < 8 or _jlen(password) > 63:
+            error = "a WPA password must be 8 to 63 characters"
+    elif security == "WEP" and not password:
+        error = "a WEP network needs a key"
+    reply["ok"] = error is None
+    if error is not None:
+        reply["error"] = error
+    return reply
 
 
 class FakeGlass(object):
@@ -109,6 +180,7 @@ class FakeGlass(object):
         self.last_result = None
         self._welcomed_ever = False
         self._frame_gen = None
+        self._ack_note_done = False
 
     # ----- plumbing ----------------------------------------------------------
 
@@ -331,6 +403,11 @@ class FakeGlass(object):
         elif t == "card":
             log("CARD [%s] %s | %s%s" % (obj.get("id"), obj.get("title"), obj.get("text"),
                                          " (%s)" % obj.get("style") if obj.get("style") else ""))
+            if not self._ack_note_done:
+                self._ack_note_done = True
+                log("Note: fake_glass acks every card 'shown' as it arrives. Real Glass acks "
+                    "'shown' only when the card is on screen (none while the display is off), "
+                    "and 'dismissed' (notifications: 'tapped' then 'dismissed') on a tap.")
             self.send({"type": "ack", "id": obj.get("id"), "event": "shown"}, gen=gen)
         elif t == "dismiss":
             log("DISMISS %s" % obj.get("id"))
@@ -365,7 +442,7 @@ class FakeGlass(object):
                     threading.Thread(target=self._frame_loop, args=(gen,), daemon=True).start()
         elif t == "wifi_add":
             log("WIFI_ADD %s (%s)" % (obj.get("ssid"), obj.get("security")))
-            self.send({"type": "wifi_result", "ssid": obj.get("ssid"), "ok": True}, gen=gen)
+            self.send(wifi_result(obj), gen=gen)
         elif t == "file_ack":
             with self.state_lock:
                 w = self.ack_waiters.get(obj.get("id"))

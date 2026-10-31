@@ -10,6 +10,7 @@ Standard library only, Python 3.9+. Needs adb on PATH (macOS:
     python3 tools/glass_adb.py start                   # start BridgeService (re-reads wifi.json)
     python3 tools/glass_adb.py launch                  # open the card screen
     python3 tools/glass_adb.py screen --watch 2        # screenshots into ./screens/ every 2 s
+    python3 tools/glass_adb.py screen --watch 2 --open # ... and open the live view in a browser
     python3 tools/glass_adb.py logs                    # GlassBridge + GlassBridgeInput logcat
     python3 tools/glass_adb.py status                  # battery, service, config.json, mock setting
     python3 tools/glass_adb.py setup 192.168.1.20      # install + mock + config + start + launch
@@ -32,7 +33,10 @@ Subcommands:
                                 push wifi.json (Glass reads and deletes it), then startservice so
                                 the running service re-reads it. Use "" as the password for OPEN.
   screen [--watch S] [--open]   adb shell screencap -p /sdcard/gb_screen.png, adb pull to
-                                ./screens/<timestamp>.png and ./screens/latest.png
+                                ./screens/<timestamp>.png and ./screens/latest.png. With
+                                --watch it also writes ./screens/view.html, a page that
+                                reloads latest.png every second (the live view); --open
+                                opens that page (or, without --watch, the screenshot)
   logs [--clear] [--all] [--dump]
                                 adb logcat -v time -s GlassBridge GlassBridgeInput (plus crashes:
                                 AndroidRuntime:E, System.err:W)
@@ -50,6 +54,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,6 +71,30 @@ ACTIVITY = PKG + "/.MainActivity"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_APK = os.path.join(REPO, "dist", "GlassBridge-debug.apk")
 LOG_FILTER = ["GlassBridge:V", "GlassBridgeInput:V", "AndroidRuntime:E", "System.err:W"]
+
+VIEW_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Glass screen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin: 0; background: #111; color: #9e9e9e; font: 14px sans-serif; }
+  img { display: block; width: 100%; max-width: 1280px; margin: 0 auto; background: #000; }
+  p { text-align: center; }
+</style></head>
+<body>
+<img id="shot" src="latest.png" alt="latest Glass screenshot">
+<p id="info">Reloads latest.png every second while glass_adb.py screen --watch runs.</p>
+<script>
+  // Plain JavaScript: reload the newest screenshot every second.
+  var img = document.getElementById("shot");
+  var info = document.getElementById("info");
+  img.onload = function () {
+    info.textContent = "latest.png loaded " + new Date().toLocaleTimeString() +
+      " (reloads every second while glass_adb.py screen --watch runs)";
+  };
+  setInterval(function () { img.src = "latest.png?t=" + Date.now(); }, 1000);
+</script>
+</body></html>
+"""
 
 
 class Fail(Exception):
@@ -285,19 +314,44 @@ def capture_screen(adb, out_dir):
     rc, out = adb.run("pull", REMOTE_SCREEN, path)
     if rc != 0 or not os.path.exists(path):
         raise Fail("screenshot pull failed:\n%s" % out.strip())
-    shutil.copyfile(path, os.path.join(out_dir, "latest.png"))
+    # Atomic, so view.html (or any viewer polling latest.png) never reads a half-written file.
+    tmp = os.path.join(out_dir, ".latest.tmp")
+    shutil.copyfile(path, tmp)
+    os.replace(tmp, os.path.join(out_dir, "latest.png"))
     return path
+
+
+def write_view(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    view = os.path.join(out_dir, "view.html")
+    with open(view, "w", encoding="utf-8") as f:
+        f.write(VIEW_HTML)
+    return view
+
+
+def open_file(path):
+    """Open path with the desktop's default app (macOS 'open', Linux 'xdg-open')."""
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    if not shutil.which(opener):
+        say("(can't find '%s'; open %s yourself)" % (opener, path))
+        return
+    subprocess.call([opener, path])
 
 
 def cmd_screen(adb, args):
     out_dir = args.out
     first = True
+    view = None
+    if args.watch:
+        # A browser page that reloads latest.png every second: the live view.
+        view = write_view(out_dir)
+        say("Live view (reloads every second): open %s" % shlex.quote(os.path.abspath(view)))
     try:
         while True:
             path = capture_screen(adb, out_dir)
             say("Saved %s (and %s)" % (path, os.path.join(out_dir, "latest.png")))
-            if first and args.open and shutil.which("open"):
-                subprocess.call(["open", path])
+            if first and args.open:
+                open_file(os.path.abspath(view or path))
             first = False
             if not args.watch:
                 return 0
@@ -392,7 +446,9 @@ def main(argv=None):
     p.add_argument("security", nargs="?", default="WPA", type=str.upper, choices=["WPA", "WEP", "OPEN"])
     p = sub.add_parser("screen", help="screenshot into ./screens/")
     p.add_argument("--watch", type=float, metavar="SECONDS", help="repeat every SECONDS until Ctrl-C")
-    p.add_argument("--open", action="store_true", help="open the first screenshot (macOS 'open')")
+    p.add_argument("--open", action="store_true",
+                   help="open the result: with --watch, a browser page (view.html) that reloads "
+                        "latest.png every second; without, the screenshot")
     p.add_argument("--out", default="screens", help="output folder (default ./screens)")
     p = sub.add_parser("logs", help="logcat for GlassBridge and GlassBridgeInput")
     p.add_argument("--clear", action="store_true", help="clear the log first")
