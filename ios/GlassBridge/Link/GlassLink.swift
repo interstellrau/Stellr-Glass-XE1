@@ -354,7 +354,7 @@ final class GlassLink: ObservableObject {
         } else {
             device = nil
         }
-        markSeen()
+        markSeen(force: true)
 
         if outcome.decision == .pair {
             let code: String = outcome.pairCode ?? "----"
@@ -370,7 +370,8 @@ final class GlassLink: ObservableObject {
     }
 
     /// Section 4 step 3: sync, then screencast if on, then queued cards, then the current
-    /// nav card (never announced).
+    /// nav card if guiding (never announced) or nav_end if not (a nav_end sent while Glass
+    /// was away, or never sent because the app was relaunched mid-guidance, isn't lost).
     private func acceptedFollowUps() -> [GBObject] {
         var out: [GBObject] = [Msg.sync(enabled: syncEnabled)]
         if screencastOn {
@@ -380,7 +381,7 @@ final class GlassLink: ObservableObject {
         for card in queuedCards {
             out.append(card.message)
         }
-        if let nav = NavigationService.shared.currentCardMessage() {
+        if let nav = NavigationService.shared.messageOnAccept() {
             out.append(nav)
         }
         return out
@@ -472,7 +473,7 @@ final class GlassLink: ObservableObject {
         remoteAddress = nil
         transfer = nil
         media.linkDropped()
-        markSeen()
+        markSeen(force: true)
         log("Glass disconnected (\(reason))")
     }
 
@@ -590,7 +591,8 @@ final class GlassLink: ObservableObject {
     // MARK: - Find my Glass
 
     /// Stores the time and the phone's latest coordinate as where Glass was last seen.
-    private func markSeen() {
+    /// `force` persists now (connect and disconnect), so the record survives a relaunch.
+    private func markSeen(force: Bool = false) {
         let now = Date()
         lastSeen = now
         if let c = LocationService.shared.location?.coordinate {
@@ -598,7 +600,7 @@ final class GlassLink: ObservableObject {
         }
         // Persist at most every 10 s (phone fixes can arrive every second while navigating).
         let t: TimeInterval = now.timeIntervalSince1970
-        if t - lastSeenSaved < 10 { return }
+        if !force && t - lastSeenSaved < 10 { return }
         lastSeenSaved = t
         let defaults = UserDefaults.standard
         defaults.set(t, forKey: GlassLink.keyLastSeenTime)

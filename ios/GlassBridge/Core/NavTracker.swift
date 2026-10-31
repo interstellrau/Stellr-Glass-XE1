@@ -14,11 +14,13 @@
 //       tracker = NavTracker(steps: steps, transport: .walking or .driving,
 //                            destinationName: <destination name>,
 //                            expectedTravelTime: route.expectedTravelTime)
-//       perform(tracker.start(now: now, at: <current position as GeoPoint, if known>))
+//       perform(tracker.start(now: now, at: <current position as GeoPoint, only if
+//                             NavTracker.isUsableOrigin(accuracyM:ageS:) says so>))
 //                                                  // sends the depart card at once
 //
 //   Every location fix while navigating (navigation gets every fix, no throttling):
-//       perform(tracker.update(fix: GeoPoint(lat: c.latitude, lon: c.longitude), now: now))
+//       perform(tracker.update(fix: GeoPoint(lat: c.latitude, lon: c.longitude), now: now,
+//                              accuracyM: location.horizontalAccuracy))
 //
 //   A repeating 1-5 s Timer while guidance is active (keeps the 15 s re-send and the
 //   20 s arrival hold going when fixes stop):
@@ -33,9 +35,10 @@
 //                             going; the tracker asks again after 10 s if still off route.
 //       .end               -> GlassLink.send(Msg.navEnd()); stop guidance (tracker = nil)
 //
-//   Glass reconnects (GlassLink's accepted-hello path, after sync/screencast/cards):
-//       if let card = tracker?.currentCard() { GlassLink.send(card.message()) }
-//       (currentCard() always has announce == false, so Glass doesn't speak again.)
+//   Glass is accepted (GlassLink's accepted-hello path, after sync/screencast/cards):
+//       if let m = NavTracker.messageOnAccept(tracker) { <send m> }
+//       (the current card with announce == false while guiding, so Glass doesn't speak
+//       again; nav_end when not guiding, so a stale nav card on Glass is dropped.)
 //
 //   User taps End:  tracker?.stop(); GlassLink.send(Msg.navEnd()); tracker = nil.
 //
@@ -50,7 +53,7 @@
 //   * Off route: > 50 m from the route for 3 fixes in a row -> .reroute(from: fix), at most
 //     once every 10 s. Off-route fixes don't move the tracker along the route.
 //   * Depart: until the user has moved 30 m from where guidance started (the position
-//     passed to start(now:at:), else the first fix), show the depart step
+//     passed to start(now:at:), else the first accurate fix), show the depart step
 //     (step 1). After that, show the next maneuver with the distance left on the current
 //     leg. `step` is 1-based out of legs + 1 (the last one is the arrival).
 //   * Arrival: on the last leg, within 25 m of its end -> arrival card (arrived: true),
@@ -74,6 +77,12 @@
 //     reroute that yields the same next turn isn't spoken again.
 //   * Distances in cards are rounded to whole metres. eta_min is omitted on the arrival
 //     card and when expectedTravelTime is unknown.
+//   * Coarse fixes and the depart step: before guidance the phone runs at 100 m accuracy,
+//     so its last fix is often a ~65 m Wi-Fi/cell position. The app passes it to start()
+//     only if it is within 20 m and at most 10 s old (isUsableOrigin). Until departed, a
+//     fix with accuracy worse than 30 m neither becomes the origin nor counts toward the
+//     30 m; it still moves the tracker along the route, so reaching the second leg still
+//     ends the depart step when GPS stays poor. A fix with unknown accuracy (nil) counts.
 
 import Foundation
 
@@ -301,6 +310,13 @@ final class NavTracker {
     static let maxSendIntervalS: TimeInterval = 15
     /// Legs shorter than this at the end of the route don't count as "the last leg".
     static let trivialLegM: Double = 1
+    /// Until departed, a fix less accurate than this (metres) doesn't become the depart
+    /// origin or count toward the depart distance.
+    static let departMaxAccuracyM: Double = 30
+    /// The phone's last fix seeds the depart origin at start only if it is at least this
+    /// accurate (metres) and this fresh (seconds).
+    static let originMaxAccuracyM: Double = 20
+    static let originMaxAgeS: TimeInterval = 10
 
     let transport: NavTransport
     let destinationName: String?
@@ -385,9 +401,27 @@ final class NavTracker {
 
     // MARK: Driving the tracker
 
+    /// True if a fix with this horizontal accuracy (metres; negative means invalid, as in
+    /// CLLocation) and age (seconds) may be passed to start(now:at:) as the depart origin.
+    static func isUsableOrigin(accuracyM: Double, ageS: TimeInterval) -> Bool {
+        let accurate: Bool = accuracyM >= 0 && accuracyM <= NavTracker.originMaxAccuracyM
+        return accurate && ageS <= NavTracker.originMaxAgeS
+    }
+
+    /// PROTOCOL.md section 4 step 3: the nav frame for a Glass that was just accepted.
+    /// While `tracker` is guiding, its current card (never announced); with no active
+    /// guidance, `nav_end`, so Glass drops a nav card left over from a missed nav_end or
+    /// an earlier run of the app. nil only while guidance has no card yet.
+    static func messageOnAccept(_ tracker: NavTracker?) -> GBObject? {
+        guard let t = tracker, t.isActive else { return Msg.navEnd() }
+        guard let card = t.currentCard() else { return nil }
+        return card.message()
+    }
+
     /// Call once when guidance starts: returns the first card (the depart step, announced).
-    /// Pass the phone's current position if known: it becomes the point the user must move
-    /// 30 m away from to leave the depart step (otherwise the first fix is used).
+    /// Pass the phone's current position only if it is a good, fresh fix
+    /// (isUsableOrigin): it becomes the point the user must move 30 m away from to leave
+    /// the depart step (otherwise the first accurate fix is used).
     func start(now: TimeInterval, at position: GeoPoint? = nil) -> [NavAction] {
         if ended || legs.isEmpty || arrivedAt != nil { return [] }
         if let p = position, p.isValid {
@@ -399,12 +433,15 @@ final class NavTracker {
         return decideSend(buildCard(), now: now)
     }
 
-    /// Feed every location fix.
-    func update(fix: GeoPoint, now: TimeInterval) -> [NavAction] {
+    /// Feed every location fix. `accuracyM` is the fix's horizontal accuracy in metres
+    /// (nil if unknown); until departed, a fix worse than 30 m doesn't count toward the
+    /// depart distance.
+    func update(fix: GeoPoint, now: TimeInterval, accuracyM: Double? = nil) -> [NavAction] {
         if ended || legs.isEmpty { return [] }
         if arrivedAt != nil { return tick(now: now) }
         if !fix.isValid { return [] }
-        if startPoint == nil {
+        let preciseForDepart: Bool = NavTracker.isPreciseForDepart(accuracyM)
+        if startPoint == nil && preciseForDepart {
             startPoint = fix
         }
 
@@ -453,7 +490,7 @@ final class NavTracker {
 
         if !departed {
             var moved: Double = 0
-            if let s = startPoint {
+            if preciseForDepart, let s = startPoint {
                 moved = Geo.distance(fix, s)
             }
             if moved >= NavTracker.departDistanceM || currentLeg > 0 {
@@ -537,6 +574,12 @@ final class NavTracker {
         } else {
             effectiveLastLeg = max(0, legs.count - 1)
         }
+    }
+
+    /// Unknown accuracy counts as precise (tests, and callers without CoreLocation).
+    private static func isPreciseForDepart(_ accuracyM: Double?) -> Bool {
+        guard let a = accuracyM else { return true }
+        return a >= 0 && a <= NavTracker.departMaxAccuracyM
     }
 
     private func rerouteAllowed(now: TimeInterval) -> Bool {

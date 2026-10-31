@@ -1,12 +1,15 @@
 // main.swift - runs the real GlassServer, GlassLink and MediaReceiver (with Core) on
 // Linux against the scriptable Network/Photos stand-ins in Stubs/, playing Glass.
-// It checks the PROTOCOL.md section 4 and 6 behaviour the iPhone app must have.
+// It checks the PROTOCOL.md section 4 and 6 behaviour the iPhone app must have, and
+// drives the real NavigationService and NavTracker through a scripted MapKit route for
+// the section 4 step 3 nav rule.
 // This is a simulation, not a device test: it says nothing about real NWListener, iOS
-// permissions, Photos or background behaviour.
+// permissions, Photos, MapKit, Core Location or background behaviour.
 
 import Foundation
 import Network
 import Photos
+import MapKit
 
 var checks: Int = 0
 var failures: Int = 0
@@ -88,6 +91,56 @@ func logContains(_ text: String) -> Bool {
     return onMain { GlassLink.shared.eventLog.contains { $0.text.contains(text) } }
 }
 
+// Scripted MapKit results (Stubs/MapKit.swift answers with these).
+final class SimPolyline: MKPolyline {
+    let coords: [CLLocationCoordinate2D]
+    init(_ coords: [CLLocationCoordinate2D]) {
+        self.coords = coords
+        super.init()
+    }
+    override var pointCount: Int { return coords.count }
+    override func getCoordinates(_ out: UnsafeMutablePointer<CLLocationCoordinate2D>, range: NSRange) {
+        for k in 0..<range.length {
+            out[k] = coords[range.location + k]
+        }
+    }
+}
+
+final class SimStep: MKRoute.Step {
+    let text: String
+    let line: SimPolyline
+    let metres: Double
+    init(_ text: String, _ coords: [CLLocationCoordinate2D], _ metres: Double) {
+        self.text = text
+        self.line = SimPolyline(coords)
+        self.metres = metres
+        super.init()
+    }
+    override var instructions: String { return text }
+    override var polyline: MKPolyline { return line }
+    override var distance: CLLocationDistance { return metres }
+}
+
+final class SimRoute: MKRoute {
+    let simSteps: [MKRoute.Step]
+    init(_ steps: [MKRoute.Step]) {
+        simSteps = steps
+        super.init()
+    }
+    override var steps: [MKRoute.Step] { return simSteps }
+    override var expectedTravelTime: TimeInterval { return 240 }
+    override var distance: CLLocationDistance { return 294 }
+}
+
+final class SimSearchResponse: MKLocalSearch.Response {
+    let items: [MKMapItem]
+    init(_ items: [MKMapItem]) {
+        self.items = items
+        super.init()
+    }
+    override var mapItems: [MKMapItem] { return items }
+}
+
 func runScenarios() {
     let keys: [String] = ["pairToken", "phoneName", "syncEnabled", "shareLocation", "stayAlive",
                           "savedMediaIDs", "lastSeenTime", "lastSeenLat", "lastSeenLon"]
@@ -132,7 +185,7 @@ func runScenarios() {
     put(b, hello(token: nil))
     wait(0.3)
     let fb = frames(b)
-    check(fb.map { $0.type } == ["pong", "welcome", "sync"], "pairing hello gets welcome then sync")
+    check(fb.map { $0.type } == ["pong", "welcome", "sync", "nav_end"], "pairing hello gets welcome, sync, then nav_end (no guidance)")
     let welcome: GBFrame? = fb.count > 1 ? fb[1] : nil
     let pairToken: String? = welcome?.string("pair_token")
     let pairCode: String? = welcome?.string("pair_code")
@@ -187,7 +240,7 @@ func runScenarios() {
     put(d, hello(token: pairToken))
     wait(0.3)
     let fd = frames(d)
-    check(fd.map { $0.type } == ["welcome", "sync"], "the right token is accepted: welcome then sync")
+    check(fd.map { $0.type } == ["welcome", "sync", "nav_end"], "the right token is accepted: welcome, sync, nav_end")
     check(fd.first?.string("pair_token") == nil && fd.first?.string("pair_code") == nil, "no pair fields on a normal accept")
     check(b.isCancelled, "the old session is closed once the new hello is accepted")
     check(onMain { GlassLink.shared.connected } && onMain { GlassLink.shared.remoteAddress } == "172.20.10.4", "connected to the new session")
@@ -268,7 +321,7 @@ func runScenarios() {
     put(g, hello(token: pairToken))
     wait(0.3)
     let fg = frames(g)
-    check(fg.map { $0.type } == ["welcome", "sync", "screencast", "card"], "accept order: welcome, sync, screencast, queued cards")
+    check(fg.map { $0.type } == ["welcome", "sync", "screencast", "card", "nav_end"], "accept order: welcome, sync, screencast, queued cards, nav_end")
     check(fg.count > 2 && fg[2].bool("on") == true && fg[2].int("fps") == 2, "screencast {on:true, fps:2}")
     check(fg.count > 3 && fg[3].string("title") == "Later" && fg[3].string("style") == nil, "the queued info card is delivered")
     check(onMain { GlassLink.shared.queuedCardCount } == 0, "the queue is empty afterwards")
@@ -284,6 +337,70 @@ func runScenarios() {
     g.inject(Data("this is not json\n".utf8))
     wait(0.3)
     check(g.isCancelled && !onMain { GlassLink.shared.connected }, "a malformed line drops the connection")
+
+    // --- 9b. Nav on accept (section 4 step 3), Start while busy, Find my Glass -----------
+    // The real NavigationService and Core NavTracker; MapKit answers with a scripted route
+    // (depart north 111 m, then right 183 m). No location fixes: guidance starts without an
+    // origin, as when the phone's last fix is too coarse.
+    let origin = CLLocationCoordinate2D(latitude: -34.93, longitude: 138.58)
+    let corner = CLLocationCoordinate2D(latitude: -34.929, longitude: 138.58)
+    let finish = CLLocationCoordinate2D(latitude: -34.929, longitude: 138.582)
+    let simRoute = SimRoute([SimStep("", [origin], 0),
+                             SimStep("Head north on Test Street", [origin, corner], 111),
+                             SimStep("Turn right onto Second Avenue", [corner, finish], 183)])
+    let place: MKMapItem = MKMapItem.forCurrentLocation()
+    place.name = "Test Park"
+    MKLocalSearch.simulatedResponse = SimSearchResponse([place])
+    MKDirections.simulatedRoutes = [simRoute]
+    let n1 = connect(listener, "172.20.10.12")
+    put(n1, hello(token: pairToken))
+    wait(0.3)
+    check(types(n1) == ["welcome", "sync", "nav_end"], "no guidance: accept ends with nav_end (drops a stale nav card)")
+    onMain {
+        NavigationService.shared.query = "Test Park"
+        NavigationService.shared.searchTyped()
+    }
+    wait(0.5)
+    check(onMain { NavigationService.shared.route } === simRoute && onMain { NavigationService.shared.destinationName } == "Test Park",
+          "the scripted search and route arrive")
+    let refusedWhileBusy: Bool = onMain { () -> Bool in
+        NavigationService.shared.transport = .driving // recalculates the preview route
+        NavigationService.shared.startGuidance()
+        return NavigationService.shared.isBusy && !NavigationService.shared.guiding
+    }
+    check(refusedWhileBusy, "Start is refused while a Walk/Drive recalculation runs")
+    wait(0.5)
+    check(!onMain { NavigationService.shared.isBusy }, "the recalculated route arrives")
+    onMain { NavigationService.shared.startGuidance() }
+    wait(0.2)
+    check(onMain { NavigationService.shared.guiding }, "guidance starts once the route is in")
+    let departCard: GBFrame? = frames(n1).last
+    check(departCard?.type == "nav" && departCard?.int("step") == 1 && departCard?.bool("announce") == true,
+          "Start sends the depart card (step 1, announced)")
+    let n2 = connect(listener, "172.20.10.13")
+    put(n2, hello(token: pairToken))
+    wait(0.3)
+    let fn2: [GBFrame] = frames(n2)
+    check(fn2.map { $0.type } == ["welcome", "sync", "nav"], "guiding: accept ends with the current nav card")
+    check(fn2.last?.bool("announce") == false && fn2.last?.int("step") == 1 && fn2.last?.string("destination") == "Test Park",
+          "the accept-time nav card is the current one, not announced")
+    check(n1.isCancelled, "the reconnect replaced the old session")
+    n2.closeFromPeer()
+    wait(0.3)
+    let seenSaved: Double = UserDefaults.standard.double(forKey: "lastSeenTime")
+    let seenNow: Double = onMain { GlassLink.shared.lastSeen?.timeIntervalSince1970 ?? 0 }
+    check(seenSaved > 0 && abs(seenSaved - seenNow) < 0.001, "Find my Glass: the disconnect time is persisted at once")
+    onMain { NavigationService.shared.endGuidance() } // Glass is away: this nav_end can't go out
+    check(!onMain { NavigationService.shared.guiding }, "End stops guidance while Glass is away")
+    let n3 = connect(listener, "172.20.10.14")
+    put(n3, hello(token: pairToken))
+    wait(0.3)
+    check(types(n3) == ["welcome", "sync", "nav_end"], "guidance ended while Glass was away: the next accept sends nav_end")
+    n3.closeFromPeer()
+    wait(0.3)
+    onMain { NavigationService.shared.clear() }
+    MKLocalSearch.simulatedResponse = nil
+    MKDirections.simulatedRoutes = nil
 
     // --- 10. Heartbeat -------------------------------------------------------------------
     let h = connect(listener, "172.20.10.8")

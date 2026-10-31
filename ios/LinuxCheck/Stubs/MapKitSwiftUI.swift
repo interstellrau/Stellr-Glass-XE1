@@ -4,7 +4,7 @@
 import Foundation
 import SwiftUI
 
-public protocol MapContent {}
+@MainActor @preconcurrency public protocol MapContent {}
 
 extension Optional: MapContent where Wrapped: MapContent {}
 

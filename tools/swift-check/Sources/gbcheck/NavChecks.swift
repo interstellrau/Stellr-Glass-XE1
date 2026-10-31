@@ -476,6 +476,53 @@ func runNav() -> Int32 {
     c.equal(NavTracker.street(from: "Turn left onto King William St."), "King William St", "street trims the full stop")
     c.check(NavTracker.street(from: "Continue straight") == nil, "no street without onto")
 
+    // ---------------------------------------------------------------- coarse fixes
+    // Before guidance the phone runs at 100 m accuracy: a coarse last fix must not become
+    // the depart origin, and coarse fixes don't count toward the 30 m depart distance.
+    c.begin("coarse fixes and the depart origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: 5, ageS: 1), true, "5 m, 1 s old: usable origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: 20, ageS: 10), true, "20 m, 10 s old: usable origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: 21, ageS: 1), false, "21 m: not an origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: 65, ageS: 0), false, "65 m Wi-Fi fix: not an origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: 5, ageS: 11), false, "11 s old: not an origin")
+    c.equal(NavTracker.isUsableOrigin(accuracyM: -1, ageS: 0), false, "negative (invalid) accuracy: not an origin")
+    let co = NavTracker(steps: routeA, transport: .walking, destinationName: nil, expectedTravelTime: 100)
+    if let card = oneSend(co.start(now: 0), "start without an origin", c) {
+        c.equal(card.step, 1, "depart card")
+    }
+    // The user stands at r0; the first fix is a coarse one 40 m away.
+    _ = co.update(fix: Geo.offset(r0, northM: 40, eastM: 0), now: 1, accuracyM: 65)
+    c.check(co.startPoint == nil, "a 65 m fix doesn't become the origin")
+    c.equal(co.departed, false, "a 65 m fix doesn't depart")
+    _ = co.update(fix: r0, now: 2, accuracyM: 5)
+    c.check(co.startPoint == r0, "the first accurate fix becomes the origin")
+    c.equal(co.departed, false, "standing still after a coarse fix: not departed")
+    _ = co.update(fix: Geo.offset(r0, northM: 10, eastM: 40), now: 3, accuracyM: 45)
+    c.equal(co.departed, false, "a 45 m fix 41 m from the origin doesn't depart")
+    _ = co.update(fix: Geo.offset(r0, northM: 35, eastM: 0), now: 4, accuracyM: 8)
+    c.equal(co.departed, true, "an accurate fix 35 m from the origin departs")
+    // Poor GPS throughout: reaching the second leg still ends the depart step.
+    let poor = NavTracker(steps: routeA, transport: .walking, destinationName: nil, expectedTravelTime: 100)
+    _ = poor.start(now: 0)
+    _ = poor.update(fix: Geo.offset(r1, northM: 0, eastM: 60), now: 5, accuracyM: 40)
+    c.equal(poor.departed, true, "a coarse fix on the second leg ends the depart step")
+    c.equal(poor.currentLeg, 1, "and moves the tracker onto it")
+
+    // ---------------------------------------------------------------- nav on accept
+    // PROTOCOL.md section 4 step 3: the current card while guiding, nav_end otherwise.
+    c.begin("nav frame for an accepted Glass")
+    c.equal(NavTracker.messageOnAccept(nil)?.type ?? "nil", "nav_end", "no tracker: nav_end")
+    let acc = NavTracker(steps: routeA, transport: .walking, destinationName: "Park", expectedTravelTime: 100)
+    c.check(NavTracker.messageOnAccept(acc) == nil, "guiding without a card yet: nothing")
+    _ = acc.start(now: 0, at: r0)
+    let onAccept: GBObject? = NavTracker.messageOnAccept(acc)
+    c.equal(onAccept?.type ?? "nil", "nav", "guiding: the nav card")
+    c.equal(onAccept?.bool("announce") ?? true, false, "the accept-time nav card is not announced")
+    c.equal(onAccept?.string("destination") ?? "", "Park", "it is the current card")
+    acc.stop()
+    c.equal(NavTracker.messageOnAccept(acc)?.type ?? "nil", "nav_end", "after stop: nav_end")
+    c.equal(NavTracker.messageOnAccept(empty)?.type ?? "nil", "nav_end", "a tracker with no legs: nav_end")
+
     if !c.failures.isEmpty {
         print("  (last walk card: \(t.lastCard.map(describe) ?? "none"))")
     }

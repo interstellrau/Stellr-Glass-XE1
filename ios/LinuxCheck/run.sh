@@ -5,15 +5,20 @@
 #      Intents) in Swift 5 mode against stand-in modules in Stubs/ (SwiftUI, MapKit,
 #      Network, CoreLocation, Photos, UIKit, CoreImage, AppIntents, Combine). Their public
 #      signatures copy the iOS 17+ SDK declarations from Apple's documentation JSON.
-#   2. Builds and runs a simulation (main.swift): the real GlassServer, GlassLink and
-#      MediaReceiver with a scriptable fake Network/Photos, playing Glass through pairing,
-#      rejection, session replacement, hello timeout, uploads, queued cards, heartbeat,
-#      Forget Glass and listener recovery. Takes about a minute (real timers).
+#   2. Builds and runs a simulation (main.swift): the real GlassServer, GlassLink,
+#      MediaReceiver and NavigationService with a scriptable fake Network/Photos/MapKit,
+#      playing Glass through pairing, rejection, session replacement, hello timeout,
+#      uploads, queued cards, the nav card or nav_end on accept, heartbeat, Forget Glass
+#      and listener recovery. Takes about a minute (real timers).
+#
+# The SwiftUI stand-ins model the iOS 26 SDK's isolation: View, App, Scene, MapContent and
+# ObservedObject are @MainActor @preconcurrency, view modifiers are nonisolated, Button
+# actions are @MainActor, and Binding(get:set:) closures are @isolated(any) @Sendable.
 #
 # Limits, read before trusting a pass: the stubs are only as accurate as their copied
-# signatures, SwiftUI's View is not @MainActor here (it is on the iOS 26 SDK), nothing is
-# rendered, and `import CoreImage.CIFilterBuiltins` is stripped from a temporary copy
-# (a Swift stub can't provide a Clang submodule). Xcode is still the first real compile.
+# signatures, nothing is rendered, and `import CoreImage.CIFilterBuiltins` is stripped from
+# a temporary copy (a Swift stub can't provide a Clang submodule). Xcode is still the first
+# real compile.
 # Tested with Swift 6.1.2 on Linux; not set up for macOS (the stubs would clash with the SDK).
 #
 # Environment: SWIFTC (default: swiftc on PATH). Exit 0 only if both parts pass.

@@ -1,8 +1,11 @@
 // Linux stand-in for the parts of SwiftUI the app uses, for ios/LinuxCheck only. Shapes and
 // labels follow the iOS 17+ SDK declarations (developer.apple.com documentation JSON), so the
 // views type-check against the same initializers and modifiers. Nothing here renders.
-// Simplifications: View isn't @MainActor here (it is on the iOS 26 SDK), modifiers return a
-// concrete wrapper instead of `some View`, and toolbar items are plain views.
+// Isolation follows the iOS 18+/26 SDK: View, App, Scene and ObservedObject are
+// @MainActor @preconcurrency, view modifiers are nonisolated, Button actions are
+// @MainActor, and Binding(get:set:) takes @isolated(any) @Sendable closures.
+// Simplifications: modifiers return a concrete wrapper instead of `some View`, and
+// toolbar items are plain views.
 
 import Foundation
 import Combine
@@ -10,7 +13,7 @@ import UIKit
 
 // MARK: - Core
 
-public protocol View {
+@MainActor @preconcurrency public protocol View {
     associatedtype Body: View
     @ViewBuilder var body: Self.Body { get }
 }
@@ -46,7 +49,7 @@ extension Optional: View where Wrapped: View {
 }
 
 public struct _Modified<Content>: View {
-    public init() {}
+    nonisolated public init() {} // built by the nonisolated modifiers (like ModifiedContent)
     public var body: Never { fatalError() }
 }
 
@@ -225,7 +228,7 @@ public struct ButtonRole: Equatable { public static let destructive = ButtonRole
 public struct Binding<Value> {
     private let getter: () -> Value
     private let setter: (Value) -> Void
-    public init(get: @escaping @Sendable () -> Value, set: @escaping @Sendable (Value) -> Void) {
+    @preconcurrency public init(get: @escaping @isolated(any) @Sendable () -> Value, set: @escaping @isolated(any) @Sendable (Value) -> Void) {
         getter = get
         setter = set
     }
@@ -249,7 +252,7 @@ public struct State<Value> {
     public var projectedValue: Binding<Value> { fatalError() }
 }
 
-@propertyWrapper
+@MainActor @preconcurrency @propertyWrapper
 public struct ObservedObject<ObjectType: ObservableObject> {
     @dynamicMemberLookup
     public struct Wrapper {
@@ -317,14 +320,14 @@ extension Label where Title == Text, Icon == Image {
 
 public struct Button<Label: View>: View {
     public var body: Never { fatalError() }
-    public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {}
-    public init(role: ButtonRole?, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {}
+    public init(action: @escaping @MainActor () -> Void, @ViewBuilder label: () -> Label) {}
+    public init(role: ButtonRole?, action: @escaping @MainActor () -> Void, @ViewBuilder label: () -> Label) {}
 }
 
 extension Button where Label == Text {
-    public init(_ titleKey: LocalizedStringKey, action: @escaping () -> Void) {}
-    public init(_ titleKey: LocalizedStringKey, role: ButtonRole?, action: @escaping () -> Void) {}
-    @_disfavoredOverload public init<S: StringProtocol>(_ title: S, action: @escaping () -> Void) {}
+    public init(_ titleKey: LocalizedStringKey, action: @escaping @MainActor () -> Void) {}
+    public init(_ titleKey: LocalizedStringKey, role: ButtonRole?, action: @escaping @MainActor () -> Void) {}
+    @_disfavoredOverload public init<S: StringProtocol>(_ title: S, action: @escaping @MainActor () -> Void) {}
 }
 
 public struct Toggle<Label: View>: View {
@@ -495,67 +498,67 @@ public struct RoundedRectangle: InsettableShape {
 // MARK: - Modifiers
 
 extension View {
-    public func font(_ font: Font?) -> _Modified<Self> { return _Modified() }
-    public func fontWeight(_ weight: Font.Weight?) -> _Modified<Self> { return _Modified() }
-    public func foregroundStyle<S: ShapeStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
-    public func padding(_ edges: Edge.Set = .all, _ length: CGFloat? = nil) -> _Modified<Self> { return _Modified() }
-    public func padding(_ length: CGFloat) -> _Modified<Self> { return _Modified() }
-    public func frame(width: CGFloat? = nil, height: CGFloat? = nil, alignment: Alignment = .center) -> _Modified<Self> { return _Modified() }
-    public func frame(minWidth: CGFloat? = nil, idealWidth: CGFloat? = nil, maxWidth: CGFloat? = nil, minHeight: CGFloat? = nil,
+    nonisolated public func font(_ font: Font?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func fontWeight(_ weight: Font.Weight?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func foregroundStyle<S: ShapeStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
+    nonisolated public func padding(_ edges: Edge.Set = .all, _ length: CGFloat? = nil) -> _Modified<Self> { return _Modified() }
+    nonisolated public func padding(_ length: CGFloat) -> _Modified<Self> { return _Modified() }
+    nonisolated public func frame(width: CGFloat? = nil, height: CGFloat? = nil, alignment: Alignment = .center) -> _Modified<Self> { return _Modified() }
+    nonisolated public func frame(minWidth: CGFloat? = nil, idealWidth: CGFloat? = nil, maxWidth: CGFloat? = nil, minHeight: CGFloat? = nil,
                       idealHeight: CGFloat? = nil, maxHeight: CGFloat? = nil, alignment: Alignment = .center) -> _Modified<Self> { return _Modified() }
-    public func background<S: ShapeStyle>(_ style: S, ignoresSafeAreaEdges edges: Edge.Set = .all) -> _Modified<Self> { return _Modified() }
-    public func background<S: ShapeStyle, T: InsettableShape>(_ style: S, in shape: T, fillStyle: FillStyle = FillStyle()) -> _Modified<Self> { return _Modified() }
-    public func navigationTitle(_ titleKey: LocalizedStringKey) -> _Modified<Self> { return _Modified() }
-    @_disfavoredOverload public func navigationTitle<S: StringProtocol>(_ title: S) -> _Modified<Self> { return _Modified() }
-    public func navigationBarTitleDisplayMode(_ displayMode: NavigationBarItem.TitleDisplayMode) -> _Modified<Self> { return _Modified() }
-    public func lineLimit(_ number: Int?) -> _Modified<Self> { return _Modified() }
-    public func lineLimit(_ limit: ClosedRange<Int>) -> _Modified<Self> { return _Modified() }
-    public func buttonStyle<S: PrimitiveButtonStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
-    public func disabled(_ disabled: Bool) -> _Modified<Self> { return _Modified() }
-    public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (V, V) -> Void) -> _Modified<Self> { return _Modified() }
-    public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> _Modified<Self> { return _Modified() }
-    public func autocorrectionDisabled(_ disable: Bool = true) -> _Modified<Self> { return _Modified() }
-    public func textSelection<S: TextSelectability>(_ selectability: S) -> _Modified<Self> { return _Modified() }
-    public func safeAreaInset<V: View>(edge: VerticalEdge, alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil,
+    nonisolated public func background<S: ShapeStyle>(_ style: S, ignoresSafeAreaEdges edges: Edge.Set = .all) -> _Modified<Self> { return _Modified() }
+    nonisolated public func background<S: ShapeStyle, T: InsettableShape>(_ style: S, in shape: T, fillStyle: FillStyle = FillStyle()) -> _Modified<Self> { return _Modified() }
+    nonisolated public func navigationTitle(_ titleKey: LocalizedStringKey) -> _Modified<Self> { return _Modified() }
+    @_disfavoredOverload nonisolated public func navigationTitle<S: StringProtocol>(_ title: S) -> _Modified<Self> { return _Modified() }
+    nonisolated public func navigationBarTitleDisplayMode(_ displayMode: NavigationBarItem.TitleDisplayMode) -> _Modified<Self> { return _Modified() }
+    nonisolated public func lineLimit(_ number: Int?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func lineLimit(_ limit: ClosedRange<Int>) -> _Modified<Self> { return _Modified() }
+    nonisolated public func buttonStyle<S: PrimitiveButtonStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
+    nonisolated public func disabled(_ disabled: Bool) -> _Modified<Self> { return _Modified() }
+    nonisolated public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (V, V) -> Void) -> _Modified<Self> { return _Modified() }
+    nonisolated public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> _Modified<Self> { return _Modified() }
+    nonisolated public func autocorrectionDisabled(_ disable: Bool = true) -> _Modified<Self> { return _Modified() }
+    nonisolated public func textSelection<S: TextSelectability>(_ selectability: S) -> _Modified<Self> { return _Modified() }
+    nonisolated public func safeAreaInset<V: View>(edge: VerticalEdge, alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil,
                                        @ViewBuilder content: () -> V) -> _Modified<Self> { return _Modified() }
-    public func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> _Modified<Self> { return _Modified() }
-    public func aspectRatio(_ aspectRatio: CGFloat? = nil, contentMode: ContentMode) -> _Modified<Self> { return _Modified() }
-    public func scaledToFit() -> _Modified<Self> { return _Modified() }
-    public func accessibilityLabel(_ labelKey: LocalizedStringKey) -> _Modified<Self> { return _Modified() }
-    public func tint(_ tint: Color?) -> _Modified<Self> { return _Modified() }
-    public func textInputAutocapitalization(_ autocapitalization: TextInputAutocapitalization?) -> _Modified<Self> { return _Modified() }
-    public func submitLabel(_ submitLabel: SubmitLabel) -> _Modified<Self> { return _Modified() }
-    public func onSubmit(of triggers: SubmitTriggers = .text, _ action: @escaping () -> Void) -> _Modified<Self> { return _Modified() }
-    public func focused(_ condition: FocusState<Bool>.Binding) -> _Modified<Self> { return _Modified() }
-    public func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
+    nonisolated public func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> _Modified<Self> { return _Modified() }
+    nonisolated public func aspectRatio(_ aspectRatio: CGFloat? = nil, contentMode: ContentMode) -> _Modified<Self> { return _Modified() }
+    nonisolated public func scaledToFit() -> _Modified<Self> { return _Modified() }
+    nonisolated public func accessibilityLabel(_ labelKey: LocalizedStringKey) -> _Modified<Self> { return _Modified() }
+    nonisolated public func tint(_ tint: Color?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func textInputAutocapitalization(_ autocapitalization: TextInputAutocapitalization?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func submitLabel(_ submitLabel: SubmitLabel) -> _Modified<Self> { return _Modified() }
+    nonisolated public func onSubmit(of triggers: SubmitTriggers = .text, _ action: @escaping () -> Void) -> _Modified<Self> { return _Modified() }
+    nonisolated public func focused(_ condition: FocusState<Bool>.Binding) -> _Modified<Self> { return _Modified() }
+    nonisolated public func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
                                      @ViewBuilder content: @escaping () -> Content) -> _Modified<Self> { return _Modified() }
-    public func scrollDismissesKeyboard(_ mode: ScrollDismissesKeyboardMode) -> _Modified<Self> { return _Modified() }
-    public func pickerStyle<S: PickerStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
-    public func multilineTextAlignment(_ alignment: TextAlignment) -> _Modified<Self> { return _Modified() }
-    public func listRowInsets(_ insets: EdgeInsets?) -> _Modified<Self> { return _Modified() }
-    public func id<ID: Hashable>(_ id: ID) -> _Modified<Self> { return _Modified() }
-    public func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> _Modified<Self> { return _Modified() }
-    public func tag<V: Hashable>(_ tag: V) -> _Modified<Self> { return _Modified() }
-    public func tabItem<V: View>(@ViewBuilder _ label: () -> V) -> _Modified<Self> { return _Modified() }
-    public func refreshable(action: @escaping @Sendable () async -> Void) -> _Modified<Self> { return _Modified() }
-    public func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> _Modified<Self> { return _Modified() }
-    public func confirmationDialog<A: View, M: View>(_ titleKey: LocalizedStringKey, isPresented: Binding<Bool>,
+    nonisolated public func scrollDismissesKeyboard(_ mode: ScrollDismissesKeyboardMode) -> _Modified<Self> { return _Modified() }
+    nonisolated public func pickerStyle<S: PickerStyle>(_ style: S) -> _Modified<Self> { return _Modified() }
+    nonisolated public func multilineTextAlignment(_ alignment: TextAlignment) -> _Modified<Self> { return _Modified() }
+    nonisolated public func listRowInsets(_ insets: EdgeInsets?) -> _Modified<Self> { return _Modified() }
+    nonisolated public func id<ID: Hashable>(_ id: ID) -> _Modified<Self> { return _Modified() }
+    nonisolated public func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> _Modified<Self> { return _Modified() }
+    nonisolated public func tag<V: Hashable>(_ tag: V) -> _Modified<Self> { return _Modified() }
+    nonisolated public func tabItem<V: View>(@ViewBuilder _ label: () -> V) -> _Modified<Self> { return _Modified() }
+    nonisolated public func refreshable(action: @escaping @Sendable () async -> Void) -> _Modified<Self> { return _Modified() }
+    nonisolated public func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> _Modified<Self> { return _Modified() }
+    nonisolated public func confirmationDialog<A: View, M: View>(_ titleKey: LocalizedStringKey, isPresented: Binding<Bool>,
                                                      titleVisibility: Visibility = .automatic,
                                                      @ViewBuilder actions: () -> A, @ViewBuilder message: () -> M) -> _Modified<Self> { return _Modified() }
-    public func alert<A: View, M: View>(_ titleKey: LocalizedStringKey, isPresented: Binding<Bool>,
+    nonisolated public func alert<A: View, M: View>(_ titleKey: LocalizedStringKey, isPresented: Binding<Bool>,
                                         @ViewBuilder actions: () -> A, @ViewBuilder message: () -> M) -> _Modified<Self> { return _Modified() }
 }
 
 // MARK: - App
 
-public protocol Scene {}
+@MainActor @preconcurrency public protocol Scene {}
 
 @resultBuilder
 public struct SceneBuilder {
     public static func buildBlock<Content: Scene>(_ content: Content) -> Content { return content }
 }
 
-public protocol App {
+@MainActor @preconcurrency public protocol App {
     associatedtype Body: Scene
     @SceneBuilder var body: Self.Body { get }
     init()

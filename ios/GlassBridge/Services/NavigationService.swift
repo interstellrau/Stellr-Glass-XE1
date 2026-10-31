@@ -8,7 +8,11 @@
 //   to tracker.tick. .send -> GlassLink.send(card.message()); .reroute -> MKDirections from
 //   that point to the same destination with the same transport (on failure do nothing: the
 //   tracker asks again after 10 s); .end -> nav_end and stop.
-// * Glass reconnect: GlassLink sends currentCardMessage() (never announced).
+// * Start needs a settled route: not while a search or preview route is running.
+// * Depart origin: the phone's last fix only if it is accurate and fresh (Core's
+//   NavTracker.isUsableOrigin); each fix goes to the tracker with its accuracy.
+// * Glass accepted: GlassLink sends messageOnAccept() (the current card, never announced,
+//   or nav_end when not guiding).
 // * No UIKit here (no idle-timer calls in services).
 // ObservableObject singleton, main thread only. Not @MainActor, on purpose.
 
@@ -326,9 +330,10 @@ final class NavigationService: NSObject, ObservableObject, MKLocalSearchComplete
 
     // MARK: - Guidance
 
-    /// Start on Glass.
+    /// Start on Glass. Not while a search or preview route is running (the button is
+    /// disabled then): the route on screen is about to be replaced.
     func startGuidance() {
-        guard let r = route else { return }
+        guard let r = route, !isBusy else { return }
         let steps: [NavStep] = NavigationService.steps(from: r)
         let t = NavTracker(steps: steps, transport: transport, destinationName: destinationName,
                            expectedTravelTime: r.expectedTravelTime)
@@ -340,6 +345,13 @@ final class NavigationService: NSObject, ObservableObject, MKLocalSearchComplete
     }
 
     private func beginGuidance(with t: NavTracker) {
+        // A preview route still in flight must not replace the guided route when it lands.
+        if previewDirections != nil {
+            previewDirections?.cancel()
+            previewDirections = nil
+            isBusy = false
+        }
+        routeToken += 1
         timer?.invalidate()
         timer = nil
         tracker?.stop()
@@ -353,7 +365,7 @@ final class NavigationService: NSObject, ObservableObject, MKLocalSearchComplete
         GlassLink.shared.log("Guidance started to " + name)
 
         let now: TimeInterval = Date().timeIntervalSince1970
-        perform(t.start(now: now, at: currentGeoPoint()))
+        perform(t.start(now: now, at: departOrigin()))
         refreshLive()
 
         let tick = Timer(timeInterval: NavigationService.tickInterval, repeats: true) { [weak self] _ in
@@ -390,7 +402,7 @@ final class NavigationService: NSObject, ObservableObject, MKLocalSearchComplete
     func handleFix(_ location: CLLocation) {
         guard let t = tracker, location.horizontalAccuracy >= 0 else { return }
         let point = GeoPoint(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
-        perform(t.update(fix: point, now: Date().timeIntervalSince1970))
+        perform(t.update(fix: point, now: Date().timeIntervalSince1970, accuracyM: location.horizontalAccuracy))
         refreshLive()
     }
 
@@ -458,14 +470,19 @@ final class NavigationService: NSObject, ObservableObject, MKLocalSearchComplete
         liveEtaMin = t.etaMinutes
     }
 
-    private func currentGeoPoint() -> GeoPoint? {
+    /// The depart origin for a new tracker: the phone's last fix, only if it is accurate
+    /// and fresh. Before guidance LocationService runs at 100 m accuracy, so that fix is
+    /// often coarse; nil makes the tracker use the first accurate fix instead.
+    private func departOrigin() -> GeoPoint? {
         guard let loc = LocationService.shared.location else { return nil }
+        let age: TimeInterval = Date().timeIntervalSince(loc.timestamp)
+        guard NavTracker.isUsableOrigin(accuracyM: loc.horizontalAccuracy, ageS: age) else { return nil }
         return GeoPoint(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
     }
 
-    /// The current nav card for a reconnecting Glass (announce is always false).
-    func currentCardMessage() -> GBObject? {
-        guard let card = tracker?.currentCard() else { return nil }
-        return card.message()
+    /// PROTOCOL.md section 4 step 3, for a Glass that was just accepted: the current nav
+    /// card while guiding (announce false), or nav_end when not guiding.
+    func messageOnAccept() -> GBObject? {
+        return NavTracker.messageOnAccept(tracker)
     }
 }

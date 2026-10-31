@@ -224,7 +224,7 @@ struct RoutePreviewPanel: View {
                     Label("Start on Glass", systemImage: "eyeglasses")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(nav.route == nil)
+                .disabled(startDisabled)
             }
             if nav.route != nil && !link.connected {
                 Text("Glass isn't connected. Guidance still starts, and Glass gets the current turn when it connects.")
@@ -232,6 +232,11 @@ struct RoutePreviewPanel: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// No route yet, or a search or Walk/Drive recalculation is still running.
+    private var startDisabled: Bool {
+        return nav.route == nil || nav.isBusy
     }
 
     private var routeSummary: String? {

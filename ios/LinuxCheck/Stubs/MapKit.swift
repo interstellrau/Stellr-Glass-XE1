@@ -26,9 +26,28 @@ open class MKDirections: NSObject {
     open class Request: NSObject { open var source: MKMapItem?; open var destination: MKMapItem?; open var transportType: MKDirectionsTransportType = .automobile; open var requestsAlternateRoutes: Bool = false }
     open class Response: NSObject { open var routes: [MKRoute] { return [] } }
     public init(request: MKDirections.Request) {}
-    open func calculate(completionHandler: @escaping @Sendable (MKDirections.Response?, (any Error)?) -> Void) {}
+    open func calculate(completionHandler: @escaping @Sendable (MKDirections.Response?, (any Error)?) -> Void) {
+        guard let routes = MKDirections.simulatedRoutes else { return }
+        let response: Response = _SimulatedDirectionsResponse(routes)
+        DispatchQueue.global().asyncAfter(deadline: .now() + MKDirections.simulatedDelay) { [weak self] in
+            if self?.cancelled == true { return }
+            completionHandler(response, nil)
+        }
+    }
     open func calculate() async throws -> MKDirections.Response { return Response() }
-    open func cancel() {}
+    open func cancel() { cancelled = true }
+
+    // Simulation hooks for ios/LinuxCheck/main.swift (not in the SDK): when simulatedRoutes
+    // is set, calculate(completionHandler:) answers with them from a background queue after
+    // simulatedDelay seconds, unless cancelled first.
+    public static var simulatedRoutes: [MKRoute]?
+    public static var simulatedDelay: Double = 0.1
+    private var cancelled: Bool = false
+}
+private final class _SimulatedDirectionsResponse: MKDirections.Response {
+    let simulated: [MKRoute]
+    init(_ routes: [MKRoute]) { simulated = routes; super.init() }
+    override var routes: [MKRoute] { return simulated }
 }
 open class MKLocalSearchCompletion: NSObject { open var title: String { return "" }; open var subtitle: String { return "" } }
 open class MKLocalPointsOfInterestRequest: NSObject {}
@@ -37,9 +56,16 @@ open class MKLocalSearch: NSObject {
     open class Response: NSObject { open var mapItems: [MKMapItem] { return [] } }
     public init(request: MKLocalSearch.Request) {}
     public init(request: MKLocalPointsOfInterestRequest) {}
-    open func start(completionHandler: @escaping @MainActor @Sendable (MKLocalSearch.Response?, (any Error)?) -> Void) {}
+    open func start(completionHandler: @escaping @MainActor @Sendable (MKLocalSearch.Response?, (any Error)?) -> Void) {
+        guard let response = MKLocalSearch.simulatedResponse else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { completionHandler(response, nil) } }
+    }
     open func start() async throws -> MKLocalSearch.Response { return Response() }
     open func cancel() {}
+
+    // Simulation hook for ios/LinuxCheck/main.swift (not in the SDK): when set,
+    // start(completionHandler:) answers with it on the main queue.
+    public static var simulatedResponse: MKLocalSearch.Response?
 }
 public protocol MKLocalSearchCompleterDelegate: NSObjectProtocol {}
 open class MKLocalSearchCompleter: NSObject {

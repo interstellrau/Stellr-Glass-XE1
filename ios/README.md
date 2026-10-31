@@ -49,7 +49,7 @@ python3 tools/fake_glass.py 172.20.10.1 --frame shot.jpg      # Media › Mirror
 | `GlassBridge/Intents/` | Shortcuts "Send to Glass" action and App Shortcuts |
 | `GlassBridge/Views/` | Glass, Navigate, Media and Tools tabs, setup guide, event log |
 | `GlassBridge/App/` | App entry point, `ContentView` (TabView), formatting helpers |
-| `LinuxCheck/` | Not part of the app. `run.sh` type-checks every app file on Linux against stand-ins for the Apple frameworks and runs a simulation of the server and pairing logic. It is not a substitute for Xcode. |
+| `LinuxCheck/` | Not part of the app. `run.sh` type-checks every app file on Linux against stand-ins for the Apple frameworks and runs a simulation of the server, pairing and accept-time nav logic. It is not a substitute for Xcode. |
 
 Settings live in `UserDefaults`: `pairToken`, `phoneName`, `syncEnabled`, `shareLocation`,
 `stayAlive`, `savedMediaIDs`, and the Find my Glass time and place.
