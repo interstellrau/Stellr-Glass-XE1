@@ -85,12 +85,24 @@ Mac, on 1 November 2026.
 | iPhone server logic | `ios/LinuxCheck` simulation: real GlassServer, GlassLink, MediaReceiver, NavigationService against a fake network | 96 checks pass |
 | Independent review | 4 iPhone reviewers (SwiftUI, actor isolation, API signatures checked against Apple's documentation JSON, behaviour), 3 Glass reviewers (Dalvik runtime, spec/UI/input, link interop), 2 tools reviewers (macOS use, stand-in parity) | No iPhone compile issues found. 4 iPhone, 5 Glass and 6 tools behaviour issues found and fixed; 1 Glass finding rejected as already covered |
 
+On real hardware, 1 November 2026: Alexander's Mac with Xcode 27.2 (27B48), an iPhone Duo
+(iPhone19,4) on iOS 27.2, and Glass Explorer on XE24 (XRH35, Android 4.4.4) over USB. This
+is newer than the Xcode 26 / iOS 26 setup planned in owner decision 7.
+
+| Check | How | Result |
+|---|---|---|
+| iPhone app compiles (question 1) | `xcodegen`, then `xcodebuild` Debug for the device, iPhoneOS 27.2 SDK, signed with team 85TPSUH87S (Mango Digital) | Build succeeded on the first compile: 0 errors and 0 warnings. The deprecation warnings expected in `TESTING.md` didn't appear. |
+| iPhone app installs | `xcrun devicectl device install app` | Installed. It hasn't been launched yet. |
+| Glass APK installs and starts | `glass_adb.py install`, `mock`, `launch` | Installed `dist/` 2.0 (code 2). Logcat shows BridgeService starting, Mock GPS on, the DCIM watch, Bonjour browsing and TTS ready. Screencap shows "Looking for your iPhone…" with the amber footer "No iPhone found yet". |
+| `am startservice` against the DUMP-guarded export | `glass_adb.py wifi` (it runs `start`) | Works from adb shell on XE24 |
+| Wi-Fi provisioning with `wifi.json` | `glass_adb.py wifi "Alexander’s iPhone Duo" … WPA` | Saved as network 0. Glass joined the hotspot about 60 s later (2.4 GHz, 172.20.10.3). **Bug:** "Couldn't delete …/wifi.json". The files dir is `root:sdcard_rw` 775 and the app (gids 3003, 1028) isn't in `sdcard_rw`, so the password stayed on the sdcard until it was removed by hand with adb. iOS hotspot SSIDs use a curly apostrophe (U+2019). |
+| Real Glass ↔ real iPhone over Personal Hotspot | No `config.json`; the iPhone app in the foreground | Gateway detection, then `172.20.10.1:9090` connected, then `welcome` with pairing (code 8094). Status sent. 9 photo uploads acked `ok`. Glass shows the phone name as "iPhone". The iPhone closed the link twice, after about 15 s and then 2.5 min. Each time Glass re-paired 2 s later with a new code (8094, then 5709, then 9071), so the iPhone had lost the token and had its window open. The iPhone app process didn't restart (same pid throughout). Cause not known yet; the only code path that clears the token is Forget Glass followed by Pair Glass or a return to the foreground. |
+
 ### Not verified
 
-- **Anything on real hardware.** Nothing has run on Glass, on an iPhone, or on a Mac.
-- **The iPhone app has never been compiled by Xcode.** The first Xcode 26 build is open
-  question 1. XcodeGen, actool and AppIntents metadata extraction have never run.
-- **The Glass APK has never run on Android** (no emulator here): UI layout on the prism, Canvas
+- **The iPhone app has never run.** It compiles and installs (see above), but nothing beyond
+  that has been checked on the iPhone.
+- **On Glass, only startup has been checked** (see above). Not yet checked: UI layout on the prism, Canvas
   arrows, input events, TTS and chime, wake locks and the wake alarm in deep sleep, mock GPS,
   FileObserver on DCIM, NsdManager, Wi-Fi provisioning, and `am startservice` against the
   DUMP-guarded export.
@@ -129,8 +141,8 @@ See the table in `TESTING.md`. Record answers here as they're settled.
 
 | # | Question | Answer |
 |---|---|---|
-| 1 | Does the full iPhone app compile? | |
-| 2 | Does `NWListener` accept Personal Hotspot clients, and does the Local Network prompt appear? | |
+| 1 | Does the full iPhone app compile? | Yes. Xcode 27.2 / iOS 27.2 SDK, 0 errors, 0 warnings, no fixes needed (1 Nov 2026) |
+| 2 | Does `NWListener` accept Personal Hotspot clients, and does the Local Network prompt appear? | Accepts: yes. Real Glass linked through 172.20.10.1:9090 (1 Nov 2026). The prompt itself wasn't seen by Claude. |
 | 3 | Does the background keep-alive work? | |
 | 4 | Which way is a swipe? | |
 | 5 | Does a tap arrive as `KEYCODE_DPAD_CENTER`? | |
@@ -139,5 +151,5 @@ See the table in `TESTING.md`. Record answers here as they're settled.
 | 8 | Do mock GPS fixes work? | |
 | 9 | Does Photos add-only saving work, including videos? | |
 | 10 | Does the Shortcuts intent run with the app in the background? | |
-| 11 | What phone name does Glass show? | |
+| 11 | What phone name does Glass show? | "iPhone", with the Tools name unset (iOS 27.2, 1 Nov 2026) |
 | 12 | Is `MKRoute.step.instructions` English? | |

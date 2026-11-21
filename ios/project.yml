@@ -51,6 +51,7 @@ targets:
         NSLocationWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
         NSPhotoLibraryAddUsageDescription: "Photos and videos you take on Glass are saved to your library."
+        NSBluetoothAlwaysUsageDescription: "Glass connects to your iPhone over Bluetooth to show your iPhone's notifications."
     settings:
       base:
         PRODUCT_NAME: GlassBridge
@@ -63,7 +64,7 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: 85TPSUH87S
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 schemes:

@@ -121,6 +121,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     private lateinit var mockGps: MockGps
     private lateinit var mediaSync: MediaSync
     private lateinit var uploader: Uploader
+    private lateinit var ancs: AncsClient
     lateinit var connection: BridgeConnection
         private set
 
@@ -207,6 +208,17 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
         mockGps.start()
         mediaSync.start()
+        ancs = AncsClient(this, object : AncsClient.Sink {
+            override fun onAncsCard(card: Card) {
+                GlassState.putCard(card)
+                alert(card.chime, card.wake)
+            }
+
+            override fun onAncsRemoved(id: String) {
+                GlassState.dismiss(id)
+            }
+        })
+        ancs.start()
         initAudio()
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -276,6 +288,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
         }
         releaseTickWakeLock()
         connection.stop()
+        ancs.stop()
         mediaSync.stop()
         mockGps.stop()
         Screencast.configure(false, ScreencastCmd.DEFAULT_FPS)
@@ -427,6 +440,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     // ----- GlassState.Listener (main thread) ---------------------------------------------
 
     override fun onGlassStateChanged() {
+        if (::ancs.isInitialized) ancs.setPhoneLinked(GlassState.link.isLinked)
         val text = GlassState.link.notificationText
         if (text != lastNotificationText) {
             lastNotificationText = text

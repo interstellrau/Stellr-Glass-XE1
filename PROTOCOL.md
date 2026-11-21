@@ -189,3 +189,37 @@ deleted. Every key is optional:
   a bump.
 - An iPhone that requires pairing rejects a v2 Glass build that predates §6, because its
   `hello` has no `token` and it can't store one. Update both sides together.
+
+## 10. Bluetooth LE and ANCS (phase 2, experimental)
+
+Glass reads iPhone notifications straight from Apple's Notification Center Service (ANCS) over
+Bluetooth LE. No GlassBridge frames travel over Bluetooth, and the TCP link doesn't change.
+This section is a spike: the open question is whether KitKat Glass, which can only be an LE
+central, can reach ANCS at all.
+
+**Roles.** The iPhone app is an LE peripheral. It advertises the GlassBridge service
+`CD23BFCC-905C-457F-B5E7-180599D5DFD2` (primary, no characteristics) whenever the app runs,
+so Glass can find and connect to the iPhone. KitKat can't advertise, so the usual ANCS setup,
+where the accessory advertises and the iPhone connects, isn't available. Glass is the LE
+central and the GATT client.
+
+**Glass.**
+
+1. While the TCP link is `LINKED` and no LE connection exists, scan for up to 12 s for an
+   advertisement that lists the GlassBridge service (AD types 0x06 or 0x07, 128-bit UUIDs
+   little-endian). Wait 30 s between scans.
+2. Connect, discover services, and find ANCS `7905F431-B5CE-4E99-A40F-4B1E122D00D0`.
+3. Bond if not bonded. iOS requires encryption for ANCS and shows its own pairing and
+   notification-sharing prompts.
+4. Enable notifications on Data Source `22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB`, then on
+   Notification Source `9FBF120D-6301-42D9-8C58-25E699A21DBD`.
+5. For each Notification Source event that's added or modified, write
+   `GetNotificationAttributes` (AppIdentifier, Title 64, Subtitle 64, Message 256) to Control
+   Point `69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9`, one request at a time, and reassemble the
+   Data Source response. For an app it hasn't seen before, follow with `GetAppAttributes`
+   (DisplayName).
+6. Show it as a local `notification` card with id `ancs-<NotificationUID>`. Chime and wake
+   only for a new event that isn't pre-existing or silent. A removed event dismisses the card.
+
+Cards that come from ANCS still send `ack` frames like any other card (§5). The iPhone logs
+acks for ids it doesn't know and otherwise ignores them.

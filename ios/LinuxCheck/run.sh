@@ -40,7 +40,7 @@ stub() { # module name, then source files
 }
 
 echo "== building stand-in modules"
-for m in Combine Network CoreLocation Photos UIKit SwiftUI AppIntents CoreImage; do
+for m in Combine Network CoreLocation CoreBluetooth Photos UIKit SwiftUI AppIntents CoreImage; do
   stub "$m" "$HERE/Stubs/$m.swift"
 done
 stub MapKit "$HERE/Stubs/MapKit.swift" "$HERE/Stubs/MapKitSwiftUI.swift"

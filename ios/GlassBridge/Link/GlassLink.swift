@@ -177,6 +177,8 @@ final class GlassLink: ObservableObject {
     /// down. Called from the App's init (so background launches from Shortcuts bring the
     /// server up), from the Shortcuts intent, and whenever the scene becomes active.
     func start() {
+        // PROTOCOL.md section 10: advertise so Glass can find this iPhone for ANCS.
+        GlassBeacon.shared.start()
         if started {
             server.ensureRunning()
             return
