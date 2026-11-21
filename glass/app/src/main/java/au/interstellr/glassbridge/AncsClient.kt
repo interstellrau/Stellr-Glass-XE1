@@ -29,9 +29,9 @@ import au.interstellr.glassbridge.core.Card
 import java.util.LinkedList
 
 /**
- * iPhone notifications through ANCS over Bluetooth LE (PROTOCOL.md section 10, a spike).
+ * iPhone notifications through ANCS over Bluetooth LE (PROTOCOL.md section 10).
  *
- * While the TCP link is up, scans for the GlassBridge service the iPhone app advertises,
+ * While the TCP link is up, scans for the StellrGlass service the iPhone app advertises,
  * connects as the LE central, bonds, subscribes to ANCS, and turns each notification into a
  * local card through [Sink]. Once connected it stays connected whatever the TCP link does.
  *
@@ -48,6 +48,10 @@ class AncsClient(private val context: Context, private val sink: Sink) {
     interface Sink {
         fun onAncsCard(card: Card)
         fun onAncsRemoved(id: String)
+        /** Show (and speak) the passkey the iPhone asks for; removed with onAncsRemoved. */
+        fun onAncsPasskey(passkey: Int)
+        /** True once subscribed to ANCS, false when that ends. */
+        fun onAncsListening(listening: Boolean)
     }
 
     private enum class Phase { IDLE, SCANNING, CONNECTING, DISCOVERING, BONDING, SUBSCRIBING, READY }
@@ -56,6 +60,12 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         const val SCAN_MS = 12_000L
         const val SCAN_GAP_MS = 30_000L
         const val RETRY_AFTER_LOSS_MS = 5_000L
+        const val RETRY_AFTER_BOND_FAILURE_MS = 60_000L
+        const val RECONNECT_AFTER_BOND_MS = 1_000L
+        /** How long to wait for the iPhone's security request before starting pairing. */
+        const val BOND_KICK_MS = 3_000L
+        /** Above default receivers, so XE24's pairing screen doesn't cover the passkey card. */
+        const val PAIRING_RECEIVER_PRIORITY = 999
         const val CONNECT_TIMEOUT_MS = 15_000L
         const val DISCOVER_DELAY_MS = 600L
         const val BOND_TIMEOUT_MS = 60_000L
@@ -78,6 +88,18 @@ class AncsClient(private val context: Context, private val sink: Sink) {
     private var controlPoint: BluetoothGattCharacteristic? = null
     private val toSubscribe = LinkedList<BluetoothGattCharacteristic>()
     private var bondedForAncs = false
+    /** The device whose passkey card is showing, if any. */
+    private var passkeyDevice: BluetoothDevice? = null
+    /**
+     * The iPhone most recently connected to. Kept after a loss: iOS can drop the LE link while
+     * pairing carries on, and that pairing still needs its passkey shown.
+     */
+    private var lastDevice: BluetoothDevice? = null
+    /** A refused bond is being removed; pairing starts when it's gone. */
+    private var replacingBond = false
+    private var listening = false
+    /** Pre-existing events ignored since the last one shown (logged as one line). */
+    private var preExistingSkipped = 0
 
     private val requests = LinkedList<AncsRequest>()
     private var inFlight: AncsResponseReader? = null
@@ -89,7 +111,15 @@ class AncsClient(private val context: Context, private val sink: Sink) {
     private val scanTimeout = Runnable { onScanTimeout() }
     private val nextScan = Runnable { startScan() }
     private val connectTimeout = Runnable { lose("connect timed out") }
-    private val bondTimeout = Runnable { lose("bonding timed out") }
+    private val bondTimeout = Runnable { lose("bonding timed out", RETRY_AFTER_BOND_FAILURE_MS) }
+    private val bondKick = Runnable {
+        val d = device
+        if (d != null && phase == Phase.BONDING) kickBond(d)
+    }
+    private val logSkipped = Runnable {
+        BridgeLog.i("ANCS: skipped $preExistingSkipped notifications already on the iPhone")
+        preExistingSkipped = 0
+    }
     private val requestTimeout = Runnable {
         val r = inFlight ?: return@Runnable
         BridgeLog.w("ANCS: no answer to ${r.request}")
@@ -109,16 +139,22 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         filter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
         context.registerReceiver(receiver, filter)
+        val pairing = IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST)
+        pairing.priority = PAIRING_RECEIVER_PRIORITY
+        context.registerReceiver(pairingReceiver, pairing)
         BridgeLog.i("ANCS: started (Bluetooth ${if (adapter.isEnabled) "on" else "off"})")
     }
 
     fun stop() {
         if (!running) return
         running = false
-        try {
-            context.unregisterReceiver(receiver)
-        } catch (e: RuntimeException) {
+        for (r in listOf(receiver, pairingReceiver)) {
+            try {
+                context.unregisterReceiver(r)
+            } catch (e: RuntimeException) {
+            }
         }
+        clearPasskey()
         main.removeCallbacks(nextScan)
         stopScan()
         closeGatt()
@@ -181,7 +217,7 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         if (phase != Phase.SCANNING) return
         stopScan()
         phase = Phase.IDLE
-        BridgeLog.d("ANCS: iPhone not advertising GlassBridge (is the app open?)")
+        BridgeLog.d("ANCS: iPhone not advertising StellrGlass (is the app open?)")
         scheduleScan(SCAN_GAP_MS)
     }
 
@@ -196,6 +232,7 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         BridgeLog.i("ANCS: found the iPhone at ${dev.address} (rssi $rssi, ${bondName(dev.bondState)}); connecting")
         phase = Phase.CONNECTING
         device = dev
+        lastDevice = dev
         // KitKat: connect from the main thread with autoConnect false.
         val g = dev.connectGatt(context, false, gattCallback)
         if (g == null) {
@@ -265,53 +302,139 @@ class AncsClient(private val context: Context, private val sink: Sink) {
             }
             return
         }
+        // Subscribe whether or not Android lists this address as bonded (PROTOCOL.md section
+        // 10 step 3); an unencrypted link makes the write fail, and pairAgain takes over.
+        subscribeToAncs(g)
+    }
+
+    /**
+     * Subscribes with the ANCS service from the last discovery. False if ANCS wasn't found;
+     * true otherwise (including when its characteristics are missing, which loses the link).
+     */
+    private fun subscribeToAncs(g: BluetoothGatt): Boolean {
+        val ancs = g.getService(Ancs.SERVICE) ?: return false
         val ns = ancs.getCharacteristic(Ancs.NOTIFICATION_SOURCE)
         val cp = ancs.getCharacteristic(Ancs.CONTROL_POINT)
         val ds = ancs.getCharacteristic(Ancs.DATA_SOURCE)
         if (ns == null || cp == null || ds == null) {
             lose("ANCS characteristics missing (ns=${ns != null} cp=${cp != null} ds=${ds != null})")
-            return
+            return true
         }
         controlPoint = cp
-        if (dev.bondState != BluetoothDevice.BOND_BONDED) {
-            bond(dev)
-            return
-        }
         subscribe(g, ds, ns)
+        return true
     }
 
+    /** Bonds before subscribing: only when ANCS isn't offered until the link is encrypted. */
     private fun bond(dev: BluetoothDevice) {
         phase = Phase.BONDING
-        if (dev.bondState == BluetoothDevice.BOND_BONDING) {
-            BridgeLog.i("ANCS: bonding already in progress")
-        } else if (!dev.createBond()) {
-            lose("createBond refused")
-            return
-        } else {
-            BridgeLog.i("ANCS: bonding; accept the pairing request on the iPhone")
-        }
         main.postDelayed(bondTimeout, BOND_TIMEOUT_MS)
+        startBond(dev)
+    }
+
+    private fun startBond(dev: BluetoothDevice) {
+        when {
+            dev.bondState == BluetoothDevice.BOND_BONDING -> BridgeLog.i("ANCS: pairing already in progress")
+            !dev.createBond() -> lose("createBond refused", RETRY_AFTER_BOND_FAILURE_MS)
+            else -> BridgeLog.i("ANCS: pairing; enter the code from Glass on the iPhone")
+        }
+    }
+
+    /**
+     * The iPhone wants an encrypted link (PROTOCOL.md section 10 step 3). Seen on XE24 on 21
+     * November 2026: the iPhone's address rotates, KitKat can't resolve it, and even at the same
+     * address the iPhone usually refused the stored key, so pairing again is the normal path.
+     */
+    private fun pairAgain(dev: BluetoothDevice) {
+        phase = Phase.BONDING
+        main.postDelayed(bondTimeout, BOND_TIMEOUT_MS)
+        if (dev.bondState == BluetoothDevice.BOND_BONDING) {
+            BridgeLog.i("ANCS: pairing already in progress")
+            return
+        }
+        // The iPhone's security request usually makes the stack pair by itself within a
+        // moment, even over a bond Android still lists; starting pairing here as well collides
+        // with it. Only if nothing has started does bondKick step in.
+        BridgeLog.i("ANCS: waiting for the iPhone to start pairing")
+        main.postDelayed(bondKick, BOND_KICK_MS)
+    }
+
+    /** Nothing started pairing after the iPhone asked for encryption: start it from Glass. */
+    private fun kickBond(d: BluetoothDevice) {
+        when (d.bondState) {
+            BluetoothDevice.BOND_NONE -> startBond(d)
+            BluetoothDevice.BOND_BONDED -> {
+                // Neither side pairs over a bond Android still lists: remove it, and pairing
+                // starts when it's gone (onBondState).
+                BridgeLog.i("ANCS: the iPhone refused the stored key; removing it to pair again")
+                replacingBond = true
+                if (!removeBond(d)) {
+                    replacingBond = false
+                    lose("couldn't remove the refused bond", RETRY_AFTER_BOND_FAILURE_MS)
+                }
+            }
+        }
     }
 
     private fun onBondState(dev: BluetoothDevice, state: Int, previous: Int) {
         // Logged for every device: after bonding the iPhone may appear under its identity
         // address rather than the one it advertised from.
         BridgeLog.i("ANCS: bond ${dev.address} ${bondName(previous)} -> ${bondName(state)}" + if (dev == device) "" else " (not the connecting device)")
-        if (dev != device || phase != Phase.BONDING) return
+        // The passkey card goes when bonding ends, even if the LE link dropped meanwhile (iOS
+        // can disconnect a moment before the bond completes).
+        if (dev == passkeyDevice && state != BluetoothDevice.BOND_BONDING) clearPasskey()
+        if (state == BluetoothDevice.BOND_BONDED && dev == lastDevice) {
+            forgetOtherIphoneBonds(dev)
+            // Bonded after the LE link was lost: reconnect now, not after the retry gap.
+            if (phase == Phase.IDLE) scheduleScan(RECONNECT_AFTER_BOND_MS)
+        }
+        if (dev != device) return
         val g = gatt ?: return
         when (state) {
             BluetoothDevice.BOND_BONDED -> {
+                if (phase != Phase.BONDING) return
                 main.removeCallbacks(bondTimeout)
+                main.removeCallbacks(bondKick)
                 bondedForAncs = true
-                // ANCS may only appear once the link is encrypted: discover again.
-                phase = Phase.DISCOVERING
-                main.postDelayed({ if (gatt == g && !g.discoverServices()) lose("discoverServices refused") }, DISCOVER_DELAY_MS)
+                // Subscribe again on this connection. If ANCS wasn't offered before bonding,
+                // discover again: it can appear only once the link is encrypted.
+                if (!subscribeToAncs(g)) {
+                    phase = Phase.DISCOVERING
+                    main.postDelayed({ if (gatt == g && !g.discoverServices()) lose("discoverServices refused") }, DISCOVER_DELAY_MS)
+                }
             }
             BluetoothDevice.BOND_NONE -> {
+                if (replacingBond) {
+                    replacingBond = false
+                    startBond(dev)
+                    return
+                }
+                if (phase != Phase.BONDING && phase != Phase.SUBSCRIBING) return
                 main.removeCallbacks(bondTimeout)
-                lose("bonding failed or was declined")
+                lose("bonding failed or was declined", RETRY_AFTER_BOND_FAILURE_MS)
             }
         }
+    }
+
+    /**
+     * Removes Glass's LE bonds left from the iPhone's earlier addresses: every reconnect can
+     * bond a new address, and they'd pile up otherwise.
+     */
+    private fun forgetOtherIphoneBonds(current: BluetoothDevice) {
+        val bonded = adapter?.bondedDevices ?: return
+        for (d in bonded) {
+            if (d == current || d.type != BluetoothDevice.DEVICE_TYPE_LE || d.name != Ancs.IPHONE_ADVERT_NAME) continue
+            BridgeLog.i("ANCS: removing the old bond with ${d.address}")
+            removeBond(d)
+        }
+    }
+
+    /** BluetoothDevice.removeBond is hidden on API 19 (it's what Settings › Forget uses). */
+    private fun removeBond(d: BluetoothDevice): Boolean = try {
+        d.javaClass.getMethod("removeBond").invoke(d) as Boolean
+    } catch (e: Exception) {
+        BridgeLog.w("ANCS: removeBond failed for ${d.address}: $e")
+        false
     }
 
     private fun subscribe(g: BluetoothGatt, ds: BluetoothGattCharacteristic, ns: BluetoothGattCharacteristic) {
@@ -328,6 +451,7 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         if (c == null) {
             phase = Phase.READY
             BridgeLog.i("ANCS: ready; iPhone notifications will show on Glass")
+            setListening(true)
             pump()
             return
         }
@@ -352,8 +476,8 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         if ((status == GATT_INSUFFICIENT_AUTHENTICATION || status == GATT_INSUFFICIENT_ENCRYPTION) &&
             dev != null && !bondedForAncs
         ) {
-            BridgeLog.i("ANCS: iPhone wants encryption (status $status); bonding")
-            bond(dev)
+            BridgeLog.i("ANCS: iPhone wants encryption (status $status)")
+            pairAgain(dev)
             return
         }
         lose("subscribing to ${c.uuid} failed (status $status)")
@@ -371,6 +495,10 @@ class AncsClient(private val context: Context, private val sink: Sink) {
 
     private fun onEvent(e: AncsEvent?) {
         if (e == null) return
+        if (!Ancs.shouldShow(e)) {
+            if (preExistingSkipped++ == 0) main.postDelayed(logSkipped, 2_000L)
+            return
+        }
         BridgeLog.d("ANCS: $e")
         if (e.isRemoved) {
             events.remove(e.uid)
@@ -491,17 +619,31 @@ class AncsClient(private val context: Context, private val sink: Sink) {
 
     // ----- loss and cleanup --------------------------------------------------------------
 
-    private fun lose(reason: String) {
+    private fun lose(reason: String, retryMs: Long = RETRY_AFTER_LOSS_MS) {
         BridgeLog.i("ANCS: $reason")
         closeGatt()
         phase = Phase.IDLE
-        scheduleScan(RETRY_AFTER_LOSS_MS)
+        scheduleScan(retryMs)
+    }
+
+    private fun setListening(value: Boolean) {
+        if (value == listening) return
+        listening = value
+        sink.onAncsListening(value)
+    }
+
+    private fun clearPasskey() {
+        if (passkeyDevice == null) return
+        passkeyDevice = null
+        sink.onAncsRemoved(Ancs.PAIRING_CARD_ID)
     }
 
     private fun closeGatt() {
         main.removeCallbacks(connectTimeout)
         main.removeCallbacks(bondTimeout)
+        main.removeCallbacks(bondKick)
         main.removeCallbacks(requestTimeout)
+        replacingBond = false
         val g = gatt
         gatt = null
         device = null
@@ -512,6 +654,7 @@ class AncsClient(private val context: Context, private val sink: Sink) {
         events.clear()
         waitingForApp.clear()
         bondedForAncs = false
+        setListening(false)
         if (g != null) {
             try {
                 g.disconnect()
@@ -548,6 +691,29 @@ class AncsClient(private val context: Context, private val sink: Sink) {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Passkey entry (PROTOCOL.md section 10 step 3). Glass is KeyboardDisplay, so it makes the
+     * passkey and the iPhone asks for it, but XE24's own pairing screen can't show one. Only
+     * the iPhone this client is (or was last) connected to is handled; anything else goes on to
+     * the system.
+     * Pairing requests are ordered broadcasts, so aborting keeps XE24's "unsupported" screen
+     * from covering the card.
+     */
+    private val pairingReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+            val variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.ERROR)
+            val ours = dev == device || dev == lastDevice
+            BridgeLog.i("ANCS: pairing request from ${dev.address}, variant $variant" + if (ours) "" else " (not the iPhone)")
+            if (!ours || variant != Ancs.PAIRING_VARIANT_DISPLAY_PASSKEY) return
+            val passkey = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_KEY, BluetoothDevice.ERROR)
+            if (passkey < 0) return
+            passkeyDevice = dev
+            sink.onAncsPasskey(passkey)
+            if (isOrderedBroadcast) abortBroadcast()
         }
     }
 

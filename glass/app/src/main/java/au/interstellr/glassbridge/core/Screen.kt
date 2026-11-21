@@ -86,12 +86,33 @@ class LinkStatus(
     companion object {
         const val TEXT_EMPTY_LINKED = "Cards from your iPhone show up here."
         const val TEXT_LOOKING = "Looking for your iPhone…"
-        const val TITLE_EMPTY = "GlassBridge"
+        const val TITLE_EMPTY = "StellrGlass"
 
         @JvmField
         val INITIAL = LinkStatus(LinkState.SEARCHING, null, null, null)
 
         private fun hostPort(e: Endpoint): String = e.host + ":" + e.port
+    }
+}
+
+/**
+ * What StellrGlass's live card on Glass's own timeline says: a [headline] and a [detail]
+ * line. "Listening" means the ANCS subscription is up (PROTOCOL.md section 10), which works
+ * over Bluetooth whatever the TCP link is doing.
+ */
+data class TimelineStatus(val headline: String, val detail: String) {
+    companion object {
+        const val HEADLINE_LISTENING = "Listening for notifications"
+        const val HEADLINE_NOT_PAIRED = "Not paired"
+        const val DETAIL_OPEN_IPHONE_APP = "Open StellrGlass on your iPhone to get its notifications"
+
+        @JvmStatic
+        fun of(link: LinkStatus, listening: Boolean): TimelineStatus = when {
+            listening -> TimelineStatus(HEADLINE_LISTENING, link.notificationText)
+            link.isLinked -> TimelineStatus(link.footerText, DETAIL_OPEN_IPHONE_APP)
+            link.state == LinkState.NEEDS_PAIRING -> TimelineStatus(HEADLINE_NOT_PAIRED, Pairing.REJECTED_HINT)
+            else -> TimelineStatus(LinkStatus.TEXT_LOOKING, link.footerText)
+        }
     }
 }
 

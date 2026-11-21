@@ -188,7 +188,7 @@ final class GlassLink: ObservableObject {
         media.cleanLeftovers()
         server.start()
         LocationService.shared.start()
-        log("GlassBridge started")
+        log("StellrGlass started")
     }
 
     /// The scene became active: make sure the server runs, open pairing if nothing is

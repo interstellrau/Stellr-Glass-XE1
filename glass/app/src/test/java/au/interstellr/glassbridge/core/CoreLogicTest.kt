@@ -199,7 +199,7 @@ class CoreLogicTest {
         assertEquals(Rejected.BAD_TOKEN, r.reason)
         assertEquals("Pair again", r.message)
         assertEquals(Rejected.PAIRING_REQUIRED, Rejected.from(j("{\"type\":\"rejected\"}")).reason)
-        assertTrue(Pairing.REJECTED_HINT.startsWith("Pair on your iPhone: GlassBridge"))
+        assertTrue(Pairing.REJECTED_HINT.startsWith("Pair on your iPhone: StellrGlass"))
     }
 
     // ----- config.json -----------------------------------------------------------------------

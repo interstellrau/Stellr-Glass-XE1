@@ -45,14 +45,14 @@ struct ScreencastSection: View {
 
     private var waitingText: String {
         if !link.connected { return "Glass isn't connected." }
-        return "Waiting for frames. GlassBridge has to be the app in front on Glass."
+        return "Waiting for frames. StellrGlass has to be the app in front on Glass."
     }
 
     private var footerText: String {
         if link.screencastOn, let t = link.screencastFrameTime {
-            return "Last frame " + GBFormat.clock(t) + ". Shows GlassBridge's own screen only (2 frames a second)."
+            return "Last frame " + GBFormat.clock(t) + ". Shows StellrGlass's own screen only (2 frames a second)."
         }
-        return "Shows GlassBridge's own screen on Glass, about 2 frames a second. Other Glass apps can't be mirrored without root."
+        return "Shows StellrGlass's own screen on Glass, about 2 frames a second. Other Glass apps can't be mirrored without root."
     }
 }
 

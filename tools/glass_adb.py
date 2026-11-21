@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""glass_adb.py: adb helpers for testing GlassBridge on Glass (macOS or Linux).
+"""glass_adb.py: adb helpers for testing StellrGlass on Glass (macOS or Linux).
 
 Standard library only, Python 3.9+. Needs adb on PATH (macOS:
 `brew install --cask android-platform-tools`), or pass --adb /path/to/adb, or set ADB.
 
-    python3 tools/glass_adb.py install                 # dist/GlassBridge-debug.apk, adb install -r
+    python3 tools/glass_adb.py install                 # dist/StellrGlass-debug.apk, adb install -r
     python3 tools/glass_adb.py mock                    # allow mock locations (once per Glass)
     python3 tools/glass_adb.py config 192.168.1.20     # dial this host (port 9090) instead of discovery
     python3 tools/glass_adb.py start                   # start BridgeService (re-reads wifi.json)
@@ -17,7 +17,7 @@ Standard library only, Python 3.9+. Needs adb on PATH (macOS:
 
 Subcommands:
   devices                       adb devices -l
-  install [apk]                 adb install -r (default dist/GlassBridge-debug.apk). On
+  install [apk]                 adb install -r (default dist/StellrGlass-debug.apk). On
                                 INSTALL_FAILED_UPDATE_INCOMPATIBLE it prints the uninstall advice.
   uninstall                     adb uninstall au.interstellr.glassbridge (deletes app data,
                                 including the pairing token)
@@ -69,7 +69,7 @@ REMOTE_SCREEN = "/sdcard/gb_screen.png"
 SERVICE = PKG + "/.BridgeService"
 ACTIVITY = PKG + "/.MainActivity"
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_APK = os.path.join(REPO, "dist", "GlassBridge-debug.apk")
+DEFAULT_APK = os.path.join(REPO, "dist", "StellrGlass-debug.apk")
 LOG_FILTER = ["GlassBridge:V", "GlassBridgeInput:V", "AndroidRuntime:E", "System.err:W"]
 
 VIEW_HTML = """<!doctype html>
@@ -205,7 +205,7 @@ def cmd_install(adb, args):
     rc, out = adb.run("install", "-r", apk, timeout=300)
     say(out)
     if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in out:
-        say("The installed GlassBridge was signed with a different key. Remove it first "
+        say("The installed StellrGlass was signed with a different key. Remove it first "
             "(this deletes its data, including the pairing token):\n"
             "    adb uninstall %s\nthen run install again." % PKG)
         return 1
@@ -377,9 +377,9 @@ def cmd_status(adb, args):
     m = re.search(r"versionName=(\S+)", out)
     code = re.search(r"versionCode=(\d+)", out)
     if m:
-        say("GlassBridge: installed, version %s%s" % (m.group(1), " (code %s)" % code.group(1) if code else ""))
+        say("StellrGlass: installed, version %s%s" % (m.group(1), " (code %s)" % code.group(1) if code else ""))
     else:
-        say("GlassBridge: not installed")
+        say("StellrGlass: not installed")
     _rc, out = adb.shell("dumpsys activity services %s" % PKG)
     say("BridgeService: %s" % ("running" if "BridgeService" in out else "not running"))
     _rc, out = adb.shell("settings get secure mock_location")
@@ -419,7 +419,7 @@ def cmd_setup(adb, args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="adb helpers for GlassBridge on Glass (package %s)." % PKG,
+        description="adb helpers for StellrGlass on Glass (package %s)." % PKG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Files dir on Glass: %s/\nSee the docstring at the top of this file for more." % FILES_DIR)
     parser.add_argument("--adb", help="path to adb (default: $ADB, then adb on PATH)")
@@ -428,8 +428,8 @@ def main(argv=None):
 
     sub.add_parser("devices", help="adb devices -l")
     p = sub.add_parser("install", help="adb install -r the debug APK")
-    p.add_argument("apk", nargs="?", help="APK (default dist/GlassBridge-debug.apk)")
-    sub.add_parser("uninstall", help="adb uninstall GlassBridge (deletes its data)")
+    p.add_argument("apk", nargs="?", help="APK (default dist/StellrGlass-debug.apk)")
+    sub.add_parser("uninstall", help="adb uninstall StellrGlass (deletes its data)")
     sub.add_parser("mock", help="allow mock locations (settings put secure mock_location 1)")
     sub.add_parser("start", help="start BridgeService (re-reads wifi.json)")
     sub.add_parser("launch", help="open MainActivity")
@@ -450,15 +450,15 @@ def main(argv=None):
                    help="open the result: with --watch, a browser page (view.html) that reloads "
                         "latest.png every second; without, the screenshot")
     p.add_argument("--out", default="screens", help="output folder (default ./screens)")
-    p = sub.add_parser("logs", help="logcat for GlassBridge and GlassBridgeInput")
+    p = sub.add_parser("logs", help="logcat tags GlassBridge and GlassBridgeInput")
     p.add_argument("--clear", action="store_true", help="clear the log first")
-    p.add_argument("--all", action="store_true", help="every tag, not just GlassBridge's")
+    p.add_argument("--all", action="store_true", help="every tag, not just the app's")
     p.add_argument("--dump", action="store_true", help="print the current log and exit")
     sub.add_parser("status", help="app, service, mock_location, battery, Wi-Fi, config.json")
     p = sub.add_parser("setup", help="install + mock + config + start + launch")
     p.add_argument("host", nargs="?")
     p.add_argument("port", nargs="?", type=int, default=9090)
-    p.add_argument("--apk", help="APK (default dist/GlassBridge-debug.apk)")
+    p.add_argument("--apk", help="APK (default dist/StellrGlass-debug.apk)")
 
     args = parser.parse_args(argv)
     if not args.cmd:

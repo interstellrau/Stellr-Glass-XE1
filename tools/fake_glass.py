@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fake_glass.py: pretends to be Glass running GlassBridge (the TCP client).
+"""fake_glass.py: pretends to be Glass running StellrGlass (the TCP client).
 
 Standard library only, Python 3.9+. Implements PROTOCOL.md v2, pairing included.
 
@@ -566,7 +566,7 @@ def _frame_size(text):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Pretend to be Glass running GlassBridge (TCP client, PROTOCOL.md v2).",
+        description="Pretend to be Glass running StellrGlass (TCP client, PROTOCOL.md v2).",
         epilog="Exit codes: 0 ok, 1 goal not met, 2 bad arguments, 3 rejected. "
                "See the docstring at the top of this file for details.")
     parser.add_argument("host", help="iPhone (or fake_phone) address, e.g. 172.20.10.1")

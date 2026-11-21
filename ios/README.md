@@ -1,4 +1,4 @@
-# GlassBridge for iPhone
+# StellrGlass XE1 for iPhone
 
 SwiftUI app (iOS 17+, iPhone, portrait) that Glass dials into. It runs the TCP server on port
 9090 (PROTOCOL.md) and turns iPhone features into protocol messages: pairing, cards, Apple Maps
@@ -17,9 +17,7 @@ Apple ID works but the install expires after 7 days. `GlassBridge.xcodeproj` and
 
 Command-line check: `xcodegen && xcodebuild -scheme GlassBridge -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`
 
-This code has never been compiled by Xcode (no Mac in the build environment). Expected
-warnings on the iOS 26 SDK: `MKMapItem(placemark:)` / `.placemark` and `openAppWhenRun` are
-deprecated. Anything else is new: fix it in place and note it in CLAUDE.md.
+Compiled with Xcode 27.2 on the iOS 27.2 SDK with no errors or warnings (November 2026).
 
 ## First run
 

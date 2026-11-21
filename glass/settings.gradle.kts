@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GlassBridge"
+rootProject.name = "StellrGlass"
 include(":app")

@@ -145,7 +145,7 @@ class AppLogicTest {
         assertEquals("Connected to iPhone", linked.with(phoneName = null).footerText)
 
         val rejected = linked.with(state = LinkState.NEEDS_PAIRING, reason = Rejected.BAD_TOKEN)
-        assertEquals("Pair on your iPhone: GlassBridge › Glass › Pair Glass", rejected.emptyText)
+        assertEquals("Pair on your iPhone: StellrGlass › Glass › Pair Glass", rejected.emptyText)
         assertEquals("Not paired with 192.168.1.20", rejected.footerText)
         assertTrue(rejected.isWarning)
         assertTrue(rejected.notificationText.contains("Pair Glass"))

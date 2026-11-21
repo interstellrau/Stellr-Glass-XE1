@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GlassBridge wire protocol v2: reference framing in Python (PROTOCOL.md section 3).
+"""StellrGlass XE1 wire protocol v2: reference framing in Python (PROTOCOL.md section 3).
 
 Standard library only, Python 3.9+. Shared by fake_phone.py, fake_glass.py,
 make_test_stream.py and test_e2e.py.
@@ -335,7 +335,7 @@ def describe(obj, payload=None, limit=400):
 
 def _main(argv=None):
     parser = argparse.ArgumentParser(
-        description="GlassBridge v2 framing reference. Imported by the other tools; "
+        description="StellrGlass XE1 v2 framing reference. Imported by the other tools; "
                     "run directly to dump the frames in a stream file.",
         epilog="Example: python3 tools/gbproto.py decode stream.bin")
     sub = parser.add_subparsers(dest="cmd")

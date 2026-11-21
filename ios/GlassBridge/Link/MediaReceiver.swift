@@ -210,7 +210,7 @@ final class MediaReceiver {
                 guard status == .authorized || status == .limited else {
                     DispatchQueue.main.async {
                         self.finishSave(url: url, upload: u, ok: false,
-                                        error: "Photos access isn't allowed (Settings › GlassBridge › Photos)",
+                                        error: "Photos access isn't allowed (Settings › StellrGlass › Photos)",
                                         thumbnail: thumbnail)
                     }
                     return

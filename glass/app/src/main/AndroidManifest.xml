@@ -24,7 +24,7 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
 
     <!-- Location: the phone's GPS goes in as the mock gps provider. Lint flags
-         ACCESS_MOCK_LOCATION in a main manifest; that's deliberate (GlassBridge only ships
+         ACCESS_MOCK_LOCATION in a main manifest; that's deliberate (StellrGlass only ships
          as a debug build). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION" />
@@ -32,8 +32,14 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="GlassBridge"
+        android:label="StellrGlass"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+
+        <!-- Glass's GDK, for the timeline live card (TimelineCard.kt). Optional, so the app
+             still installs on Android without it. -->
+        <uses-library
+            android:name="com.google.android.glass"
+            android:required="false" />
 
         <!-- Landscape only: Glass's 640x360 display never rotates. -->
         <activity
@@ -54,7 +60,7 @@
              Android refuses a non-exported service to the adb shell user on a stock (non-root)
              build. So: exported, but only to callers holding DUMP. The adb shell user holds DUMP
              on every build (it's what lets `adb shell dumpsys` work); ordinary apps can't get
-             it; GlassBridge itself (MainActivity, BootReceiver) is always allowed. -->
+             it; StellrGlass itself (MainActivity, BootReceiver) is always allowed. -->
         <service
             android:name=".BridgeService"
             android:exported="true"

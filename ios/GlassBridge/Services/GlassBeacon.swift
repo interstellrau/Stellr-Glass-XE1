@@ -1,10 +1,10 @@
 // GlassBeacon.swift - a Bluetooth LE advertisement so Glass can find this iPhone for ANCS.
 //
-// PROTOCOL.md section 10 (phase 2, a spike). Glass reads iPhone notifications straight from
+// PROTOCOL.md section 10 (phase 2). Glass reads iPhone notifications straight from
 // Apple's Notification Center Service (ANCS). KitKat can't advertise, so the iPhone can't
-// find Glass; instead this app advertises the GlassBridge service, and Glass connects to the
+// find Glass; instead this app advertises the StellrGlass service, and Glass connects to the
 // iPhone as the LE central, bonds, and subscribes to ANCS. The service has no
-// characteristics: no GlassBridge data goes over Bluetooth.
+// characteristics: no StellrGlass data goes over Bluetooth.
 //
 // In the background iOS moves advertised service UUIDs to an Apple-only overflow area, so
 // Glass finds the iPhone while the app is open. Once connected, the link is iOS's, not ours.
@@ -47,7 +47,7 @@ final class GlassBeacon: NSObject, CBPeripheralManagerDelegate {
             if !m.isAdvertising {
                 m.startAdvertising([
                     CBAdvertisementDataServiceUUIDsKey: [GlassBeacon.serviceUUID],
-                    CBAdvertisementDataLocalNameKey: "GlassBridge",
+                    CBAdvertisementDataLocalNameKey: "StellrGlass",
                 ])
             }
         }
@@ -58,7 +58,7 @@ final class GlassBeacon: NSObject, CBPeripheralManagerDelegate {
         switch peripheral.state {
         case .poweredOn: text = "Bluetooth on: advertising for Glass"
         case .poweredOff: text = "Bluetooth is off: Glass can't get iPhone notifications"
-        case .unauthorized: text = "Bluetooth not allowed: Settings › Privacy & Security › Bluetooth › GlassBridge"
+        case .unauthorized: text = "Bluetooth not allowed: Settings › Privacy & Security › Bluetooth › StellrGlass"
         case .unsupported: text = "Bluetooth LE isn't supported here"
         default: text = "Bluetooth state \(peripheral.state.rawValue)"
         }

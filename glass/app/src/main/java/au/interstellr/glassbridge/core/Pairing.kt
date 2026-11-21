@@ -17,10 +17,10 @@ object Pairing {
     /** Id of the local card shown after a new pairing (re-pairing replaces it in place). */
     const val CARD_ID = "glassbridge-paired"
     const val CARD_TITLE = "Paired"
-    const val CARD_SOURCE = "GlassBridge"
+    const val CARD_SOURCE = "StellrGlass"
 
     /** Shown in place of the empty-state text after `rejected`. */
-    const val REJECTED_HINT = "Pair on your iPhone: GlassBridge › Glass › Pair Glass"
+    const val REJECTED_HINT = "Pair on your iPhone: StellrGlass › Glass › Pair Glass"
 
     /** The short form for the one-line footer of a card or nav page after `rejected`. */
     const val REJECTED_FOOTER = "Not paired: pair on your iPhone"

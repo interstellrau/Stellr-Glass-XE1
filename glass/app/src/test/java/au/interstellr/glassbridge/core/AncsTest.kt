@@ -129,6 +129,59 @@ class AncsTest {
     }
 
     @Test
+    fun pairingCardShowsThePasskey() {
+        assertEquals("412544", Ancs.passkeyText(412544))
+        assertEquals("004521", Ancs.passkeyText(4521))
+        assertEquals("000000", Ancs.passkeyText(0))
+        assertTrue(Ancs.passkeySpeech(4521).endsWith("enter 0 0 4 5 2 1"))
+
+        val card = Ancs.pairingCard(4521, 1000L)
+        assertEquals(Ancs.PAIRING_CARD_ID, card.id)
+        assertTrue(card.id.startsWith(Ancs.CARD_PREFIX))
+        assertEquals("004521", card.text)
+        assertFalse(card.isNotification)
+        assertTrue(card.chime && card.wake)
+        assertNull(card.ttlS)
+        assertEquals(4, Ancs.PAIRING_VARIANT_DISPLAY_PASSKEY)
+    }
+
+    @Test
+    fun preExistingEventsAreNotShown() {
+        assertTrue(Ancs.shouldShow(AncsEvent(Ancs.EVENT_ADDED, 0, 4, 1, 1L)))
+        assertTrue(Ancs.shouldShow(AncsEvent(Ancs.EVENT_ADDED, Ancs.FLAG_SILENT, 4, 1, 1L)))
+        assertTrue(Ancs.shouldShow(AncsEvent(Ancs.EVENT_MODIFIED, 0, 4, 1, 1L)))
+        // Flags 21 and 53 as a real iPhone replayed them on subscribing (21 November 2026).
+        assertFalse(Ancs.shouldShow(AncsEvent(Ancs.EVENT_ADDED, 21, 0, 1, 1L)))
+        assertFalse(Ancs.shouldShow(AncsEvent(Ancs.EVENT_ADDED, 53, 0, 1, 1L)))
+        assertFalse(Ancs.shouldShow(AncsEvent(Ancs.EVENT_MODIFIED, Ancs.FLAG_PRE_EXISTING, 4, 1, 1L)))
+        assertTrue(Ancs.shouldShow(AncsEvent(Ancs.EVENT_REMOVED, Ancs.FLAG_PRE_EXISTING, 4, 1, 1L)))
+    }
+
+    @Test
+    fun timelineStatus() {
+        val linked = LinkStatus(LinkState.LINKED, "iPhone", null, null)
+        assertEquals(
+            TimelineStatus(TimelineStatus.HEADLINE_LISTENING, "Connected to iPhone"),
+            TimelineStatus.of(linked, listening = true)
+        )
+        assertEquals(
+            TimelineStatus("Connected to iPhone", TimelineStatus.DETAIL_OPEN_IPHONE_APP),
+            TimelineStatus.of(linked, listening = false)
+        )
+        // ANCS runs over Bluetooth, so it can still be listening with the Wi-Fi link down.
+        assertEquals(TimelineStatus.HEADLINE_LISTENING, TimelineStatus.of(LinkStatus.INITIAL, listening = true).headline)
+        assertEquals(
+            TimelineStatus(LinkStatus.TEXT_LOOKING, "No iPhone found yet"),
+            TimelineStatus.of(LinkStatus.INITIAL, listening = false)
+        )
+        val notPaired = LinkStatus(LinkState.NEEDS_PAIRING, null, null, null)
+        assertEquals(
+            TimelineStatus(TimelineStatus.HEADLINE_NOT_PAIRED, Pairing.REJECTED_HINT),
+            TimelineStatus.of(notPaired, listening = false)
+        )
+    }
+
+    @Test
     fun cardRule() {
         val attrs = mapOf(
             Ancs.ATTR_APP_IDENTIFIER to "com.apple.MobileSMS",

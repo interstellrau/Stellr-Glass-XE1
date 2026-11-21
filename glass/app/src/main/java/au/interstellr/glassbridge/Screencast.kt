@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Sends GlassBridge's own window to the iPhone as JPEG frames (brief "Screencast"). KitKat
+ * Sends StellrGlass's own window to the iPhone as JPEG frames (brief "Screencast"). KitKat
  * has no screen-capture API for apps, so the activity's decorView is drawn into a reused
  * RGB_565 bitmap and compressed at quality 60.
  *

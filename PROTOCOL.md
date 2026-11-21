@@ -1,4 +1,4 @@
-# GlassBridge wire protocol v2
+# StellrGlass XE1 wire protocol v2
 
 This file is the contract between the Glass app (`glass/`) and the iPhone app (`ios/`).
 Change it **before** changing either side. The Python reference in `tools/gbproto.py`
@@ -100,7 +100,7 @@ accepted.
 | `file_end` | →P | `id` |  |
 | `file_ack` | →G | `id`, `ok`, `error?` | Glass marks the file synced only on `ok:true`. With no ack after 60 s, Glass retries next session. One file at a time. |
 | `screencast` | →G | `on`, `fps?` (1–5, default 2) |  |
-| `frame` | →P | `w`, `h`, `bytes` + JPEG payload | Only while screencast is on and GlassBridge is in front. About 20–40 KiB at 640×360, quality 60. |
+| `frame` | →P | `w`, `h`, `bytes` + JPEG payload | Only while screencast is on and StellrGlass is in front. About 20–40 KiB at 640×360, quality 60. |
 | `wifi_add` | →G | `ssid`, `password?`, `security` (`WPA`, `WEP`, `OPEN`) | Saves a network on Glass |
 | `wifi_result` | →P | `ssid`, `ok`, `error?` |  |
 
@@ -155,7 +155,7 @@ also has a pairing window: a deadline, open or closed.
 **Glass** stores the token in `SharedPreferences` (`link` / `token`) and sends it in every
 `hello`. When `welcome` carries `pair_token`, Glass replaces its stored token and shows a card
 titled `Paired` whose text is `<phone_name>` and `Code <pair_code>`, with `wake` and `chime`.
-When it receives `rejected`, Glass shows "Pair on your iPhone: GlassBridge › Glass › Pair
+When it receives `rejected`, Glass shows "Pair on your iPhone: StellrGlass › Glass › Pair
 Glass" in place of the empty-state text, and retries every 5 s until a `welcome` arrives.
 A Glass paired with one iPhone (or `fake_phone.py`) must be paired again to use another.
 
@@ -190,30 +190,58 @@ deleted. Every key is optional:
 - An iPhone that requires pairing rejects a v2 Glass build that predates §6, because its
   `hello` has no `token` and it can't store one. Update both sides together.
 
-## 10. Bluetooth LE and ANCS (phase 2, experimental)
+## 10. Bluetooth LE and ANCS (phase 2)
 
 Glass reads iPhone notifications straight from Apple's Notification Center Service (ANCS) over
-Bluetooth LE. No GlassBridge frames travel over Bluetooth, and the TCP link doesn't change.
-This section is a spike: the open question is whether KitKat Glass, which can only be an LE
-central, can reach ANCS at all.
+Bluetooth LE. No StellrGlass frames travel over Bluetooth, and the TCP link doesn't change.
+KitKat Glass can only be an LE central; this works on XE24 with an iPhone on iOS 27.2
+(21 November 2026), with the pairing caveats in step 3.
 
-**Roles.** The iPhone app is an LE peripheral. It advertises the GlassBridge service
-`CD23BFCC-905C-457F-B5E7-180599D5DFD2` (primary, no characteristics) whenever the app runs,
-so Glass can find and connect to the iPhone. KitKat can't advertise, so the usual ANCS setup,
+**Roles.** The iPhone app is an LE peripheral. It advertises the StellrGlass service
+`CD23BFCC-905C-457F-B5E7-180599D5DFD2` (primary, no characteristics) with the local name
+`StellrGlass` whenever the app runs, so Glass can find and connect to the iPhone. KitKat can't advertise, so the usual ANCS setup,
 where the accessory advertises and the iPhone connects, isn't available. Glass is the LE
 central and the GATT client.
 
 **Glass.**
 
 1. While the TCP link is `LINKED` and no LE connection exists, scan for up to 12 s for an
-   advertisement that lists the GlassBridge service (AD types 0x06 or 0x07, 128-bit UUIDs
+   advertisement that lists the StellrGlass service (AD types 0x06 or 0x07, 128-bit UUIDs
    little-endian). Wait 30 s between scans.
 2. Connect, discover services, and find ANCS `7905F431-B5CE-4E99-A40F-4B1E122D00D0`.
-3. Bond if not bonded. iOS requires encryption for ANCS and shows its own pairing and
-   notification-sharing prompts.
+3. Subscribe (step 4) straight away, whether or not Android lists the iPhone as bonded. iOS
+   requires encryption for ANCS. If the link isn't encrypted, the write fails with
+   insufficient authentication (5) or encryption (15), and Glass pairs:
+   - The iPhone usually sends a security request that makes the stack pair by itself within a
+     moment, even when Android lists the address as bonded (the iPhone refused that key).
+     Starting pairing from Glass as well collides with it, so wait 3 s first.
+   - If nothing has started by then: not bonded, start pairing; bonded, remove the bond and
+     pair once it's gone.
+   - When the bond completes, subscribe again on the same connection (discover again only if
+     ANCS wasn't found), and remove any other LE bonds named `StellrGlass`, which are left
+     over from earlier iPhone addresses.
+
+   If ANCS isn't offered at all, bond first and discover again.
+
+   On XE24 with an iPhone on iOS 27.2 (21 November 2026), expect to pair again whenever Glass
+   reconnects. The iPhone's private address rotates and KitKat can't resolve it, and even at
+   the same address the iPhone usually refused the stored key. The cause isn't known; an HCI
+   capture of one reconnect would show it.
+
+   Pairing is passkey entry, because Glass's Bluetooth IO capability is KeyboardDisplay: Glass
+   makes a 6-digit passkey and the iPhone asks for it. XE24's own pairing screen can't show a
+   passkey (Android pairing variant 4), so Glass shows it on a local `info` card with id
+   `ancs-pairing`, speaks it, and removes the card when bonding ends. iOS doesn't share
+   notifications until the user allows it (Settings › Bluetooth › ⓘ on Glass › Share System
+   Notifications); until then the subscription succeeds but no events arrive. The setting
+   carried over when Glass paired again. If bonding fails or is declined, wait 60 s before
+   trying again.
 4. Enable notifications on Data Source `22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB`, then on
    Notification Source `9FBF120D-6301-42D9-8C58-25E699A21DBD`.
-5. For each Notification Source event that's added or modified, write
+5. Ignore events with the PreExisting flag: iOS replays the whole Notification Center on
+   every subscription (hundreds of events on a real iPhone), so Glass shows only
+   notifications that arrive while it's connected. For each other event that's added or
+   modified, write
    `GetNotificationAttributes` (AppIdentifier, Title 64, Subtitle 64, Message 256) to Control
    Point `69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9`, one request at a time, and reassemble the
    Data Source response. For an app it hasn't seen before, follow with `GetAppAttributes`

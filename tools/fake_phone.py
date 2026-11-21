@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fake_phone.py: pretends to be the GlassBridge iPhone app (the TCP server).
+"""fake_phone.py: pretends to be the StellrGlass iPhone app (the TCP server).
 
 Standard library only, Python 3.9+. Implements PROTOCOL.md v2, pairing (section 6)
 included. Point Glass at it with config.json (no Bonjour here):
@@ -599,7 +599,7 @@ class PhoneServer(object):
         with self.lock:
             self.window_deadline = time.monotonic() + self.pair_window
             self._window_was_open = True
-        log("Pairing window open for %d s: start (or restart) GlassBridge on Glass to pair"
+        log("Pairing window open for %d s: start (or restart) StellrGlass on Glass to pair"
             % self.pair_window)
 
     def forget(self):
@@ -1006,7 +1006,7 @@ def _local_ips():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Pretend to be the GlassBridge iPhone app (TCP server, PROTOCOL.md v2).",
+        description="Pretend to be the StellrGlass iPhone app (TCP server, PROTOCOL.md v2).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Console commands: card, notify, dismiss, speak, nav, navend, loc, sync, cast, "
                "status, wifi, ping, pair, forget, name, raw, help, quit.\n"

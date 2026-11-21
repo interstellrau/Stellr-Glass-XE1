@@ -1,4 +1,5 @@
-# XcodeGen spec for the GlassBridge iPhone app.
+# XcodeGen spec for the StellrGlass XE1 iPhone app.
+# The target, scheme and project keep the internal name GlassBridge.
 #
 #   brew install xcodegen
 #   cd ios && xcodegen && open GlassBridge.xcodeproj
@@ -30,7 +31,7 @@ targets:
     info:
       path: GlassBridge/Info.plist
       properties:
-        CFBundleDisplayName: GlassBridge
+        CFBundleDisplayName: StellrGlass
         # XcodeGen writes 1.0 / 1 unless the version settings are mapped explicitly.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
@@ -47,7 +48,7 @@ targets:
           - location
         NSBonjourServices:
             - "_glassbridge._tcp"
-        NSLocalNetworkUsageDescription: "GlassBridge talks to your Google Glass over Wi-Fi or your Personal Hotspot."
+        NSLocalNetworkUsageDescription: "StellrGlass talks to your Google Glass over Wi-Fi or your Personal Hotspot."
         NSLocationWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Your location is sent to Glass for directions and geotagging, and used to remember where Glass was last connected."
         NSPhotoLibraryAddUsageDescription: "Photos and videos you take on Glass are saved to your library."
@@ -64,7 +65,7 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 85TPSUH87S
+        DEVELOPMENT_TEAM: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 schemes:

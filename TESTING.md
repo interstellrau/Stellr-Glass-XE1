@@ -1,6 +1,6 @@
-# GlassBridge hardware test runbook
+# StellrGlass XE1 hardware test runbook
 
-This is the first time GlassBridge meets real hardware. Work through the parts in order:
+This is the first time StellrGlass XE1 meets real hardware. Work through the parts in order:
 each one settles some of the open questions and narrows down where a failure can come from.
 Record what you find in `CLAUDE.md` (Verification ledger and Open questions).
 
@@ -58,7 +58,7 @@ session in this repo. If `.refreshable` fails on main-actor isolation, wrap its 
 `await MainActor.run { … }`. Record each fix in `CLAUDE.md`.
 
 **First launch:** allow Local Network (without it Glass can never connect: Settings › Privacy &
-Security › Local Network › GlassBridge) and location While Using. The Glass tab should show
+Security › Local Network › StellrGlass) and location While Using. The Glass tab should show
 "Listening on port 9090", and Pairing "Pairing open 1:59" because nothing is paired yet.
 
 ## 2. iPhone vs `fake_glass.py` (milestone 6)
@@ -68,7 +68,7 @@ The Mac pretends to be Glass. This tests the iPhone app on its own.
 1. iPhone: Settings › Personal Hotspot › Allow Others to Join, and turn on **Maximize
    Compatibility** (Glass's radio is 2.4 GHz only; do it now so part 4 just works).
 2. Join the Mac to the iPhone's hotspot. The iPhone is `172.20.10.1`.
-3. iPhone: GlassBridge › Glass tab › **Pair Glass** (opens 2 minutes).
+3. iPhone: StellrGlass › Glass tab › **Pair Glass** (opens 2 minutes).
 4. Mac: `python3 tools/fake_glass.py 172.20.10.1 --upload /tmp/gb_photo.jpg --frame /tmp/gb_frame.jpg`
 
 | Check | Do | Expect | Question |
@@ -83,7 +83,7 @@ The Mac pretends to be Glass. This tests the iPhone app on its own.
 | Phone name | Tools › Name shown on Glass, then restart `fake_glass` | The welcome carries your name. Without it, iOS reports just "iPhone". | 11 |
 | Rejected | Glass tab › Forget Glass (this drops `fake_glass`) | It prints `Rejected: pairing_required` and retries every 5 s; the Glass tab shows an orange note. Tap Pair Glass: it pairs within 5 s. | |
 | Background | Settings › Stay connected in background on, lock the iPhone for 5 minutes | `fake_glass` keeps the link: no disconnects, pings answered. Note how long it survives. | 3 |
-| Shortcuts | Shortcuts app › new shortcut › Send to Glass, run it with GlassBridge closed | `fake_glass` prints the card; the dialog says "Sent to Glass." If it doesn't run in the background, the fallback is `openAppWhenRun = true`. | 10 |
+| Shortcuts | Shortcuts app › new shortcut › Send to Glass, run it with StellrGlass closed | `fake_glass` prints the card; the dialog says "Sent to Glass." If it doesn't run in the background, the fallback is `openAppWhenRun = true`. | 10 |
 | Navigation | Navigate › search › Walk › Start on Glass, then walk around the block | `fake_glass` prints `nav` frames: the depart step, then turns with distances; `announce` near each turn; `nav_end` on arrival or End. Check the instructions are English (Adelaide, English (Australia)). | 12 |
 
 ## 3. Glass vs `fake_phone.py` (milestone 7)
@@ -93,7 +93,7 @@ to be on the same 2.4 GHz Wi-Fi: home Wi-Fi, or the iPhone's hotspot (with `conf
 pointing at the Mac, Glass dials the Mac, not the iPhone).
 
 1. Install the APK: `python3 tools/glass_adb.py install`
-   - `INSTALL_FAILED_UPDATE_INCOMPATIBLE` means an older GlassBridge signed with another key is
+   - `INSTALL_FAILED_UPDATE_INCOMPATIBLE` means an older StellrGlass signed with another key is
      installed: `python3 tools/glass_adb.py uninstall`, then install again.
 2. If Glass isn't already on that Wi-Fi, give it the network over USB (the app reads and
    deletes `wifi.json`):
@@ -119,7 +119,7 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
 | Swipe | Send 3 cards, then swipe forward | A forward swipe should show an older card (pager `2/3`). Logs print `gesture FORWARD dx=…`. If it's backwards: `python3 tools/glass_adb.py invert-swipe on`, then `python3 tools/glass_adb.py launch`. | 4 |
 | Back | Swipe down | Leaves the card screen; the service keeps running. | |
 | Notification | `notify Messages | Are you free?` | The screen wakes, chime, the card comes to the front. Tap: `ACK … tapped` then `dismissed`. | |
-| Speech | `speak Hello from GlassBridge` | Spoken through the bone-conduction speaker. | |
+| Speech | `speak Hello from StellrGlass` | Spoken through the bone-conduction speaker. | |
 | Nav | `nav left 120 Turn left onto King William Street`, then `nav left 40 Turn left onto King William Street`, then `nav arrive 0 Arrive at Rundle Mall` | The pinned nav card with a left arrow, "120 m", spoken turn on the first; the distance updates; "Arrived". `navend` removes it. | |
 | Photo sync | `sync on`, then take a photo with the camera button | Older unsynced shots upload first, then the new one, into `received/` on the Mac. Videos upload when recording ends. Glass forgets what it synced when it pairs with the iPhone in part 4, so the iPhone gets them all too. | |
 | Screencast | `cast on` | Frames in `received/frames/` while the card screen is in front. `cast off` stops. | |
@@ -171,7 +171,7 @@ pointing at the Mac, Glass dials the Mac, not the iPhone).
 |---|---|
 | Glass shows "Looking for your iPhone…" forever | `python3 tools/glass_adb.py status` (Wi-Fi, `config.json`). On the hotspot, Maximize Compatibility must be on. Logs show each discovery step. |
 | Glass shows "Pair on your iPhone…" | Tap Pair Glass on the iPhone (or `pair` in `fake_phone`). Glass retries every 5 s. |
-| iPhone Server row says Waiting or Failed | Settings › Privacy & Security › Local Network › GlassBridge must be on. |
+| iPhone Server row says Waiting or Failed | Settings › Privacy & Security › Local Network › StellrGlass must be on. |
 | No speech | TTS may still be starting; `speak` is dropped until it's ready. Try again after a few seconds. |
 | Install fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | `python3 tools/glass_adb.py uninstall`, then install again. |
 | Want the raw protocol | `fake_phone.py` and `fake_glass.py` print every frame. |

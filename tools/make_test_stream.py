@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""make_test_stream.py: a tricky GlassBridge frame stream for cross-language checks.
+"""make_test_stream.py: a tricky StellrGlass XE1 frame stream for cross-language checks.
 
 Standard library only, Python 3.9+. tools/swift-check/run.sh uses it like this:
 
@@ -356,7 +356,7 @@ def cmd_reencode(in_path, out_path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Write a tricky GlassBridge frame stream with its expected frames, or verify a "
+        description="Write a tricky StellrGlass XE1 frame stream with its expected frames, or verify a "
                     "stream another implementation re-encoded.",
         epilog="Exit codes: 0 ok, 1 mismatch / invalid stream, 2 unreadable input.")
     sub = parser.add_subparsers(dest="cmd")

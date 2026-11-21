@@ -4,7 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 /**
- * Apple Notification Center Service over Bluetooth LE (PROTOCOL.md section 10, a spike).
+ * Apple Notification Center Service over Bluetooth LE (PROTOCOL.md section 10).
  *
  * Platform-free: UUIDs, packet builders and parsers, and the notification-to-card rule.
  * AncsClient (outside core) does the Bluetooth work. Byte layouts follow Apple's ANCS
@@ -56,6 +56,50 @@ object Ancs {
 
     @JvmStatic
     fun cardId(uid: Long): String = CARD_PREFIX + uid
+
+    /** The local card that shows the Bluetooth passkey while bonding (section 10 step 3). */
+    const val PAIRING_CARD_ID = "ancs-pairing"
+
+    /**
+     * Android's PAIRING_VARIANT_DISPLAY_PASSKEY (hidden on API 19): Glass shows a passkey that
+     * the iPhone asks for. XE24's pairing screen doesn't support it.
+     */
+    const val PAIRING_VARIANT_DISPLAY_PASSKEY = 4
+
+    /** The passkey as the iPhone wants it: 6 digits, leading zeros kept. */
+    @JvmStatic
+    fun passkeyText(passkey: Int): String = passkey.toString().padStart(6, '0')
+
+    /** Spoken digit by digit, so TTS doesn't read it as one large number. */
+    @JvmStatic
+    fun passkeySpeech(passkey: Int): String =
+        "Bluetooth pairing. On your iPhone, enter " + passkeyText(passkey).toList().joinToString(" ")
+
+    /** The local name the iPhone app advertises; Glass's LE bonds with the iPhone carry it. */
+    const val IPHONE_ADVERT_NAME = "StellrGlass"
+
+    /** The passkey card: the code as the large text, chime and wake. */
+    @JvmStatic
+    fun pairingCard(passkey: Int, now: Long): Card = Card(
+        id = PAIRING_CARD_ID,
+        title = "Enter this code on your iPhone",
+        text = passkeyText(passkey),
+        source = "Bluetooth pairing",
+        time = now,
+        style = Card.STYLE_INFO,
+        chime = true,
+        wake = true,
+        ttlS = null,
+        expiresAt = null
+    )
+
+    /**
+     * Section 10 step 5: pre-existing events are ignored, because iOS replays the whole
+     * Notification Center on every subscription. A removal always goes through (dismissing a
+     * card that was never shown is harmless).
+     */
+    @JvmStatic
+    fun shouldShow(event: AncsEvent): Boolean = event.isRemoved || !event.isPreExisting
 
     /** The request section 10 step 5 sends for an added or modified notification. */
     @JvmStatic

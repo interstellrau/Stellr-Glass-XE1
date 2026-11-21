@@ -83,7 +83,7 @@ struct LinkSection: View {
     }
 
     private var listenerHint: String {
-        return "If this doesn't say Listening, allow Local Network for GlassBridge in Settings › Privacy & Security › Local Network, then reopen the app."
+        return "If this doesn't say Listening, allow Local Network for StellrGlass in Settings › Privacy & Security › Local Network, then reopen the app."
     }
 }
 
@@ -133,7 +133,7 @@ struct PairingSection: View {
     }
 
     private var footerText: String {
-        return "Pair Glass opens pairing for 2 minutes (it also opens by itself when the app starts or comes to the front while nothing is paired). Make sure Glass has the GlassBridge app open and is on the same network or your Personal Hotspot. Both screens then show the same 4-digit code."
+        return "Pair Glass opens pairing for 2 minutes (it also opens by itself when the app starts or comes to the front while nothing is paired). Make sure Glass has the StellrGlass app open and is on the same network or your Personal Hotspot. Both screens then show the same 4-digit code."
     }
 }
 
@@ -365,6 +365,6 @@ struct GlassSettingsSection: View {
     }
 
     private var footerText: String {
-        return "Save photos lets Glass upload new photos and videos to your library. Share location sends the iPhone's GPS to Glass. While either location toggle is on, GlassBridge keeps running in the background (blue location indicator) so Glass stays connected when the iPhone is locked."
+        return "Save photos lets Glass upload new photos and videos to your library. Share location sends the iPhone's GPS to Glass. While either location toggle is on, StellrGlass keeps running in the background (blue location indicator) so Glass stays connected when the iPhone is locked."
     }
 }

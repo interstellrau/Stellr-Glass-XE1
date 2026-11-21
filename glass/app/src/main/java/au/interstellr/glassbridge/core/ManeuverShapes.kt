@@ -7,7 +7,7 @@ package au.interstellr.glassbridge.core
  * One distinct shape per maneuver (see the unit test).
  *
  * Left turns mirror right turns. The U-turn swings to the right, as it does in left-hand
- * traffic (Australia, where GlassBridge is used).
+ * traffic (Australia, where StellrGlass is used).
  */
 class ManeuverShape(
     /** Polylines: x0, y0, x1, y1, ... */

@@ -204,7 +204,7 @@ final class GlassServer {
         case .setup:
             reportListener("Starting", ready: false)
         case .waiting(let error):
-            reportListener("Waiting (\(error)). Check Settings › Privacy & Security › Local Network › GlassBridge.", ready: false)
+            reportListener("Waiting (\(error)). Check Settings › Privacy & Security › Local Network › StellrGlass.", ready: false)
         case .ready:
             var portText: String = String(GBProtocol.port)
             if let p = l.port {

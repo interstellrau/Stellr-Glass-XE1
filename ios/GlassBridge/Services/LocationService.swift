@@ -102,7 +102,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         case .restricted:
             return "Restricted"
         case .denied:
-            return "Denied (Settings › GlassBridge › Location)"
+            return "Denied (Settings › StellrGlass › Location)"
         case .authorizedAlways:
             return "Always"
         case .authorizedWhenInUse:

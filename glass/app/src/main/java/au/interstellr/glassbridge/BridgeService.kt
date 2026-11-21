@@ -23,6 +23,8 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import au.interstellr.glassbridge.core.Ancs
+import au.interstellr.glassbridge.core.TimelineStatus
 import au.interstellr.glassbridge.core.BridgeConnection
 import au.interstellr.glassbridge.core.BridgeLog
 import au.interstellr.glassbridge.core.Card
@@ -122,6 +124,9 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
     private lateinit var mediaSync: MediaSync
     private lateinit var uploader: Uploader
     private lateinit var ancs: AncsClient
+    private lateinit var timeline: TimelineCard
+    /** True while the ANCS subscription is up (PROTOCOL.md section 10). */
+    private var ancsListening = false
     lateinit var connection: BridgeConnection
         private set
 
@@ -188,6 +193,8 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
         startForeground(NOTIFICATION_ID, buildNotification(GlassState.link.notificationText))
         lastNotificationText = GlassState.link.notificationText
+        timeline = TimelineCard(this)
+        updateTimeline()
         GlassState.addListener(this)
 
         // Before the link starts: silence is then measured on a clock that keeps counting while
@@ -216,6 +223,17 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
             override fun onAncsRemoved(id: String) {
                 GlassState.dismiss(id)
+            }
+
+            override fun onAncsPasskey(passkey: Int) {
+                GlassState.putCard(Ancs.pairingCard(passkey, System.currentTimeMillis()))
+                alert(chime = true, wake = true)
+                speak(Ancs.passkeySpeech(passkey))
+            }
+
+            override fun onAncsListening(listening: Boolean) {
+                ancsListening = listening
+                updateTimeline()
             }
         })
         ancs.start()
@@ -289,6 +307,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
         releaseTickWakeLock()
         connection.stop()
         ancs.stop()
+        timeline.remove()
         mediaSync.stop()
         mockGps.stop()
         Screencast.configure(false, ScreencastCmd.DEFAULT_FPS)
@@ -441,6 +460,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
 
     override fun onGlassStateChanged() {
         if (::ancs.isInitialized) ancs.setPhoneLinked(GlassState.link.isLinked)
+        updateTimeline()
         val text = GlassState.link.notificationText
         if (text != lastNotificationText) {
             lastNotificationText = text
@@ -451,6 +471,11 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
                 BridgeLog.w("Notification update failed: $e")
             }
         }
+    }
+
+    /** The live card on Glass's timeline; it only redraws when its text changes. */
+    private fun updateTimeline() {
+        if (::timeline.isInitialized) timeline.show(TimelineStatus.of(GlassState.link, ancsListening))
     }
 
     // ----- actions used by the card screen (main thread) ---------------------------------
@@ -593,7 +618,7 @@ class BridgeService : Service(), BridgeConnection.Listener, GlassHandler, GlassS
         @Suppress("DEPRECATION")
         return Notification.Builder(this)
             .setSmallIcon(R.drawable.ic_stat_glassbridge)
-            .setContentTitle("GlassBridge")
+            .setContentTitle("StellrGlass")
             .setContentText(text)
             .setContentIntent(pi)
             .setOngoing(true)

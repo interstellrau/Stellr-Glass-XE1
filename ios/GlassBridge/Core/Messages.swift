@@ -56,9 +56,9 @@ enum RejectReason: String {
     var defaultMessage: String {
         switch self {
         case .pairingRequired:
-            return "Pair on your iPhone: GlassBridge › Glass › Pair Glass"
+            return "Pair on your iPhone: StellrGlass › Glass › Pair Glass"
         case .badToken:
-            return "This Glass isn't paired with this iPhone. Pair again on your iPhone: GlassBridge › Glass › Pair Glass"
+            return "This Glass isn't paired with this iPhone. Pair again on your iPhone: StellrGlass › Glass › Pair Glass"
         }
     }
 }
